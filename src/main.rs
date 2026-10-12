@@ -26,6 +26,15 @@ const TOGGLE_SHORTCUT: &str = "CommandOrControl+Alt+W";
 /// Argumento con el que se lanza al iniciar sesión en el sistema: arranca oculta en la bandeja.
 const MINIMIZED_ARG: &str = "--minimized";
 const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
+/// Oculta el botón "Obtener WhatsApp para Windows" del pie de la lista de chats. Si WhatsApp
+/// cambia su HTML, el selector deja de coincidir y simplemente vuelve a verse.
+const HIDE_ELEMENTS_SCRIPT: &str = r#"
+document.addEventListener("DOMContentLoaded", () => {
+  const style = document.createElement("style");
+  style.textContent = `#side > [role="button"]:has([data-icon="wa-square-icon"]) { display: none !important; }`;
+  document.head.append(style);
+});
+"#;
 
 /// WhatsApp Web rechaza WebKitGTK como "navegador no soportado", así que en Linux nos
 /// presentamos como un Chrome de escritorio. En Windows WebView2 ya envía un UA de Edge válido.
@@ -114,6 +123,7 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
     .min_inner_size(400.0, 500.0)
     .visible(visible)
     .data_directory(profile_dir)
+    .initialization_script(HIDE_ELEMENTS_SCRIPT)
     .on_navigation(move |url| match links::classify(url) {
         Target::Internal => true,
         Target::External => {
