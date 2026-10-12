@@ -1,0 +1,4 @@
+/target
+/gen
+# Resultados de medición locales (dependen de la máquina)
+/bench/*.csv

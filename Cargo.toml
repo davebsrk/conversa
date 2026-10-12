@@ -1,0 +1,24 @@
+[package]
+name = "conversa"
+version = "0.1.0"
+description = "Cliente de escritorio ligero para WhatsApp Web"
+authors = ["Conversa contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/davebsrk/conversa"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7.2", features = [] }
+
+[dependencies]
+tauri = { version = "2.12.3", features = [] }
+tauri-plugin-single-instance = "2.5.3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
