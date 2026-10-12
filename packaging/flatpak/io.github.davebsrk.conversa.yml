@@ -1,0 +1,37 @@
+# Empaqueta el .deb que genera Tauri. El workflow de release deja `conversa.deb` junto a este archivo.
+id: io.github.davebsrk.conversa
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: conversa
+finish-args:
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --share=network
+  - --device=all # cámara y micrófono para llamadas y notas de voz
+  - --socket=pulseaudio
+  - --filesystem=xdg-download
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher # icono de bandeja
+
+modules:
+  # La bandeja carga libappindicator en tiempo de ejecución y el runtime de GNOME no la trae.
+  - shared-modules/libappindicator/libappindicator-gtk3-12.10.json
+
+  - name: conversa
+    buildsystem: simple
+    sources:
+      - type: file
+        path: conversa.deb
+    build-commands:
+      - ar -x conversa.deb
+      - tar -xf data.tar.gz
+      - install -Dm755 usr/bin/conversa /app/bin/conversa
+      - install -Dm644 usr/share/applications/Conversa.desktop /app/share/applications/${FLATPAK_ID}.desktop
+      - desktop-file-edit --set-icon=${FLATPAK_ID} /app/share/applications/${FLATPAK_ID}.desktop
+      - |
+        for icon in usr/share/icons/hicolor/*/apps/conversa.png; do
+          size=$(basename "$(dirname "$(dirname "$icon")")")
+          install -Dm644 "$icon" "/app/share/icons/hicolor/$size/apps/${FLATPAK_ID}.png"
+        done

@@ -8,28 +8,57 @@ Para Windows y Linux.
 
 ## Por qué
 
-La app oficial de escritorio es lenta al arrancar, consume mucha RAM y sigue gastando recursos en
-segundo plano. Conversa carga el mismo WhatsApp Web en la webview del sistema (WebView2 en Windows,
-WebKitGTK en Linux), sin capas extra, y gestiona activamente la memoria cuando no la estás usando.
+La app oficial de escritorio arranca lenta, consume mucha RAM y sigue gastando recursos en
+segundo plano. Conversa carga el mismo WhatsApp Web en la webview del sistema (WebView2 en
+Windows, WebKitGTK en Linux) y, en cuanto la minimizas o la mandas a la bandeja, le pide a la
+webview que libere memoria sin cortar la conexión: los mensajes y las notificaciones siguen
+llegando al momento.
 
 No reimplementa el protocolo de WhatsApp: es WhatsApp Web oficial dentro de una ventana ligera,
-así que tu cuenta no corre riesgo de baneo por usar un cliente no oficial.
+así que no hay riesgo de baneo por usar un cliente no oficial.
 
-## Estado
+## Funciones
 
-En desarrollo temprano. Consulta el [plan](PLAN.md).
+- Todo lo que ofrece WhatsApp Web: chats, grupos, multimedia, notas de voz, estados, encuestas…
+- Icono en la bandeja con aviso de mensajes no leídos (y contador en el título de la ventana).
+- Cerrar la ventana la manda a la bandeja; se sale desde el menú de la bandeja.
+- Notificaciones nativas del sistema.
+- Iniciar con el sistema (opcional, desde la bandeja): arranca oculta en la bandeja.
+- Atajo global <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd> para mostrar u ocultar la ventana.
+- Los enlaces se abren en tu navegador; las descargas van a tu carpeta Descargas.
+- Recuerda el tamaño y la posición de la ventana.
+- Se actualiza sola desde GitHub Releases.
 
 ## Rendimiento
 
 Medido con [`tools/measure.ps1`](tools/measure.ps1), que suma todo el árbol de procesos
-(incluidos los procesos de WebView2). "Memoria" equivale a la columna del Administrador de tareas.
+(incluidos los procesos de WebView2). "Memoria" es la columna del Administrador de tareas.
+Ambas apps minimizadas, en reposo, medidas a la vez durante 3 minutos en Windows 11:
 
-| Escenario (Windows 11) | App oficial 2.2639.100 | Conversa |
+| | App oficial 2.2639.100 | Conversa 0.1.0 |
 |---|---|---|
-| Minimizada, en reposo — memoria | 399 MB | _pendiente_ |
-| Minimizada, en reposo — commit | 1008 MB | _pendiente_ |
-| Minimizada, en reposo — CPU | ~0 % | _pendiente_ |
-| Tamaño del ejecutable | — | 4,2 MB |
+| Memoria | 631 MB | **155 MB** |
+| Commit (memoria reservada) | 1085 MB | **668 MB** |
+| CPU | ~0 % | ~0 % |
+| Tamaño del ejecutable | — | 6,5 MB |
+
+En Linux, WebKitGTK no tiene una forma equivalente de liberar memoria al minimizar, así que allí
+el ahorro es menor.
+
+## Instalar
+
+Descarga la última versión desde [Releases](https://github.com/davebsrk/conversa/releases/latest):
+
+| Sistema | Archivo |
+|---|---|
+| Windows (instalador) | `Conversa_x.y.z_x64-setup.exe` (o el `.msi`) |
+| Windows (portable) | `Conversa_x.y.z_x64-portable.exe` |
+| Debian / Ubuntu | `Conversa_x.y.z_amd64.deb` |
+| Fedora / openSUSE | `Conversa-x.y.z-1.x86_64.rpm` |
+| Cualquier Linux | `Conversa_x.y.z_amd64.AppImage` o `Conversa_x.y.z_x86_64.flatpak` |
+
+Los instaladores de Windows no están firmados todavía: SmartScreen mostrará "Editor desconocido".
+Pulsa *Más información → Ejecutar de todas formas*.
 
 ## Compilar
 

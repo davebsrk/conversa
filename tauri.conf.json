@@ -14,7 +14,13 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis",
+      "msi",
+      "deb",
+      "rpm",
+      "appimage"
+    ],
     "category": "SocialNetworking",
     "shortDescription": "Cliente de escritorio ligero para WhatsApp Web",
     "longDescription": "Conversa es un cliente de escritorio ligero para WhatsApp Web, escrito en Rust. No está afiliado con WhatsApp ni con Meta.",
@@ -25,6 +31,18 @@
       "icons/128x128@2x.png",
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE2MDdGQTk4Q0RENzUzQzIKUldUQ1U5Zk5tUG9IRnJxQmlscldFbjBWVHVvMG9zelBQRzJINEJoa2dzcS8vcjlVQUwrT0h3djMK",
+      "endpoints": [
+        "https://github.com/davebsrk/conversa/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

@@ -1,0 +1,19 @@
+# Maintainer: davebsrk <davebsrk@gmail.com>
+# Para publicar una versión: cambia pkgver, ejecuta `updpkgsums && makepkg --printsrcinfo > .SRCINFO`
+# y sube ambos archivos al repo AUR `conversa-bin`.
+pkgname=conversa-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Cliente de escritorio ligero para WhatsApp Web (no oficial)"
+arch=('x86_64')
+url="https://github.com/davebsrk/conversa"
+license=('MIT OR Apache-2.0')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator')
+provides=('conversa')
+conflicts=('conversa')
+source=("$url/releases/download/v$pkgver/Conversa_${pkgver}_amd64.deb")
+sha256sums=('SKIP')
+
+package() {
+  bsdtar -xf data.tar.gz -C "$pkgdir"
+}

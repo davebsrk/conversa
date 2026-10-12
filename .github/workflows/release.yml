@@ -1,0 +1,96 @@
+name: Release
+
+# Al publicar un tag vX.Y.Z se compilan los instaladores y se crea un release en *borrador*.
+# Revísalo en GitHub y pulsa "Publish": a partir de ahí lo verá el actualizador automático.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.04: la glibc más antigua posible para que AppImage/.deb funcionen en más distros.
+        os: [windows-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias de sistema (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tauriScript: npx --yes @tauri-apps/cli@2.12.2
+          tagName: ${{ github.ref_name }}
+          releaseName: Conversa ${{ github.ref_name }}
+          releaseBody: Instaladores para Windows y Linux. Consulta el README para elegir.
+          releaseDraft: true
+
+      - name: Ejecutable portable (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          portable="Conversa_${GITHUB_REF_NAME#v}_x64-portable.exe"
+          cp target/release/conversa.exe "$portable"
+          gh release upload "$GITHUB_REF_NAME" "$portable" --clobber
+
+      - name: Guardar el .deb para Flatpak
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: target/release/bundle/deb/*.deb
+
+  flatpak:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: deb
+          path: packaging/flatpak
+      - run: mv packaging/flatpak/*.deb packaging/flatpak/conversa.deb
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/flatpak/io.github.davebsrk.conversa.yml
+          bundle: Conversa_x86_64.flatpak
+          cache: false
+
+  flatpak-upload:
+    needs: flatpak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*.flatpak*'
+          merge-multiple: true
+      - name: Subir el .flatpak al release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mv Conversa_x86_64.flatpak "Conversa_${GITHUB_REF_NAME#v}_x86_64.flatpak"
+          gh release upload "$GITHUB_REF_NAME" Conversa_*_x86_64.flatpak --clobber --repo "$GITHUB_REPOSITORY"
