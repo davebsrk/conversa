@@ -4,6 +4,7 @@
 mod links;
 #[cfg(windows)]
 mod toast;
+mod updates;
 
 use std::path::PathBuf;
 
@@ -119,8 +120,7 @@ fn main() {
                 eprintln!("no se pudo registrar el atajo {TOGGLE_SHORTCUT}: {err}");
             }
 
-            #[cfg(not(debug_assertions))]
-            tauri::async_runtime::spawn(update(app.handle().clone()));
+            updates::spawn_periodic_check(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -202,6 +202,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 autostart_enabled,
                 None::<&str>,
             )?,
+            &MenuItem::with_id(app, "updates", "Buscar actualizaciones", true, None::<&str>)?,
             &MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?,
         ],
     )?;
@@ -228,6 +229,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                     eprintln!("no se pudo cambiar el inicio automático: {err}");
                 }
             }
+            "updates" => updates::check_now(app.clone()),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -372,24 +374,6 @@ fn default_download_path(app: &AppHandle, url: &Url) -> Option<PathBuf> {
             n => dir.join(format!("{stem} ({n}){ext}")),
         })
         .find(|path| !path.exists())
-}
-
-/// Al arrancar busca una versión nueva en GitHub Releases y, si la hay, la instala y reinicia.
-#[cfg(not(debug_assertions))]
-async fn update(app: AppHandle) {
-    use tauri_plugin_updater::UpdaterExt;
-
-    let result = async {
-        if let Some(update) = app.updater()?.check().await? {
-            update.download_and_install(|_, _| {}, || {}).await?;
-            app.restart();
-        }
-        Ok::<_, tauri_plugin_updater::Error>(())
-    }
-    .await;
-    if let Err(err) = result {
-        eprintln!("no se pudo comprobar si hay actualizaciones: {err}");
-    }
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 name: Release
 
-# Al publicar un tag vX.Y.Z se compilan los instaladores y se crea un release en *borrador*.
-# Revísalo en GitHub y pulsa "Publish": a partir de ahí lo verá el actualizador automático.
+# Al publicar un tag vX.Y.Z se compilan los instaladores y se suben a un release en borrador.
+# Cuando está todo subido, el job `publish` lo publica y las apps instaladas avisan de la versión nueva.
 on:
   push:
     tags: ['v*']
@@ -94,3 +94,12 @@ jobs:
         run: |
           mv Conversa_x86_64.flatpak "Conversa_${GITHUB_REF_NAME#v}_x86_64.flatpak"
           gh release upload "$GITHUB_REF_NAME" Conversa_*_x86_64.flatpak --clobber --repo "$GITHUB_REPOSITORY"
+
+  publish:
+    needs: flatpak-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publicar el release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest --repo "$GITHUB_REPOSITORY"

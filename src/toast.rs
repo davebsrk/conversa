@@ -136,9 +136,6 @@ struct Toast {
 
 impl Toast {
     fn show(self, app: &AppHandle) -> windows::core::Result<()> {
-        unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        }
         let picture = download_picture(app, &self.tag, &self.icon)
             .or_else(|| app_icon_path(app).ok())
             .map(|path| {
@@ -169,36 +166,79 @@ impl Toast {
             title = xml_escape(&self.title),
             body = xml_escape(&self.body),
         );
-        let doc = XmlDocument::new()?;
-        doc.LoadXml(&HSTRING::from(xml))?;
-        let toast = ToastNotification::CreateToastNotification(&doc)?;
-        if !self.tag.is_empty() {
-            // Un toast por chat: el siguiente mensaje sustituye al anterior.
-            toast.SetTag(&HSTRING::from(short_hash(&self.tag)))?;
-        }
-
+        // Un toast por chat: el siguiente mensaje sustituye al anterior.
+        let tag = (!self.tag.is_empty()).then(|| short_hash(&self.tag));
         let (app, id, title) = (app.clone(), self.id, self.title);
-        toast.Activated(&TypedEventHandler::new(
-            move |_, args: windows::core::Ref<IInspectable>| {
-                let reply = args
-                    .as_ref()
-                    .and_then(|args| args.cast::<ToastActivatedEventArgs>().ok())
-                    .and_then(|args| args.UserInput().ok())
-                    .and_then(|input| input.Lookup(&HSTRING::from(REPLY_INPUT)).ok())
-                    .and_then(|value| value.cast::<IReference<HSTRING>>().ok())
-                    .and_then(|value| value.Value().ok())
-                    .map(|value| value.to_string())
-                    .filter(|value| !value.trim().is_empty());
-                let (app, title) = (app.clone(), title.clone());
-                let _ = app
-                    .clone()
-                    .run_on_main_thread(move || activated(&app, id, title, reply));
-                Ok(())
-            },
-        ))?;
-
-        ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?.Show(&toast)
+        show_xml(&xml, tag, move |reply| {
+            let (app, title) = (app.clone(), title.clone());
+            let _ = app
+                .clone()
+                .run_on_main_thread(move || activated(&app, id, title, reply));
+        })
     }
+}
+
+/// Toast sencillo de la propia app (no de WhatsApp). `on_click` se llama al pulsar el toast o su
+/// botón, desde un hilo cualquiera.
+pub fn show_simple(
+    title: &str,
+    body: &str,
+    button: Option<&str>,
+    on_click: impl Fn() + Send + 'static,
+) -> windows::core::Result<()> {
+    let actions = button
+        .map(|label| {
+            format!(
+                r#"<actions><action content="{}" arguments="button"/></actions>"#,
+                xml_escape(label)
+            )
+        })
+        .unwrap_or_default();
+    let xml = format!(
+        r#"<toast launch="open">
+            <visual><binding template="ToastGeneric">
+                <text>{}</text>
+                <text>{}</text>
+            </binding></visual>
+            {actions}
+        </toast>"#,
+        xml_escape(title),
+        xml_escape(body),
+    );
+    show_xml(&xml, Some("app".into()), move |_| on_click())
+}
+
+/// Muestra un toast; `on_activated` recibe el texto de la respuesta rápida si se escribió.
+fn show_xml(
+    xml: &str,
+    tag: Option<String>,
+    on_activated: impl Fn(Option<String>) + Send + 'static,
+) -> windows::core::Result<()> {
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
+    let doc = XmlDocument::new()?;
+    doc.LoadXml(&HSTRING::from(xml))?;
+    let toast = ToastNotification::CreateToastNotification(&doc)?;
+    if let Some(tag) = tag {
+        toast.SetTag(&HSTRING::from(tag))?;
+    }
+    toast.Activated(&TypedEventHandler::new(
+        move |_, args: windows::core::Ref<IInspectable>| {
+            let reply = args
+                .as_ref()
+                .and_then(|args| args.cast::<ToastActivatedEventArgs>().ok())
+                .and_then(|args| args.UserInput().ok())
+                .and_then(|input| input.Lookup(&HSTRING::from(REPLY_INPUT)).ok())
+                .and_then(|value| value.cast::<IReference<HSTRING>>().ok())
+                .and_then(|value| value.Value().ok())
+                .map(|value| value.to_string())
+                .filter(|value| !value.trim().is_empty());
+            on_activated(reply);
+            Ok(())
+        },
+    ))?;
+    ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?.Show(&toast)
 }
 
 /// En el hilo principal: avisa a WhatsApp del clic (abre el chat) y envía la respuesta si la hay.
