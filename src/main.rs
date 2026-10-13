@@ -193,7 +193,16 @@ fn main() {
             toast::register(app.handle())?;
             let start_hidden = std::env::args().any(|arg| arg == MINIMIZED_ARG)
                 && settings::get(app.handle()).start_hidden;
-            let window = build_main_window(app.handle(), !start_hidden)?;
+            // Arrancada con un enlace de WhatsApp (whatsapp://...): la ventana se crea ya en ese chat.
+            // Navegar a él después, durante la primera carga, deja WebView2 colgado en about:blank.
+            let start_url = app
+                .deep_link()
+                .get_current()
+                .ok()
+                .flatten()
+                .and_then(|urls| urls.iter().find_map(links::to_whatsapp_web))
+                .unwrap_or_else(|| WHATSAPP_URL.parse().expect("URL válida"));
+            let window = build_main_window(app.handle(), !start_hidden, start_url)?;
             let _ = window.set_zoom(settings::get(app.handle()).zoom);
             // En Linux WebKitGTK ya envía las notificaciones web al sistema.
             #[cfg(windows)]
@@ -217,9 +226,6 @@ fn main() {
             }
             let handle = app.handle().clone();
             deep_link.on_open_url(move |event| open_whatsapp_links(&handle, event.urls()));
-            if let Ok(Some(urls)) = deep_link.get_current() {
-                open_whatsapp_links(app.handle(), urls);
-            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -247,81 +253,77 @@ fn set_global_shortcut(app: &AppHandle, enabled: bool) {
     }
 }
 
-fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> {
+fn build_main_window(app: &AppHandle, visible: bool, url: Url) -> tauri::Result<WebviewWindow> {
     let on_nav = app.clone();
     let on_new = app.clone();
 
-    let builder = WebviewWindowBuilder::new(
-        app,
-        MAIN_WINDOW,
-        WebviewUrl::External(WHATSAPP_URL.parse().expect("URL válida")),
-    )
-    .title("Conversa")
-    .inner_size(1100.0, 750.0)
-    .min_inner_size(400.0, 500.0)
-    .visible(visible)
-    .data_directory(profile_dir(app)?)
-    .initialization_script(INIT_SCRIPT)
-    .on_navigation(move |url| match links::classify(url) {
-        Target::Internal => true,
-        Target::External => {
-            open_external(&on_nav, url);
-            false
-        }
-        Target::Chat(web) => {
-            open_chat(&on_nav, web);
-            false
-        }
-        Target::AppSettings => {
-            open_settings(&on_nav);
-            false
-        }
-        Target::Blocked => false,
-    })
-    .on_new_window(move |url, _features| match links::classify(&url) {
-        Target::Internal => NewWindowResponse::Allow,
-        Target::External => {
-            open_external(&on_new, &url);
-            NewWindowResponse::Deny
-        }
-        Target::Chat(web) => {
-            open_chat(&on_new, web);
-            NewWindowResponse::Deny
-        }
-        Target::AppSettings => {
-            open_settings(&on_new);
-            NewWindowResponse::Deny
-        }
-        Target::Blocked => NewWindowResponse::Deny,
-    })
-    .on_download(|webview, event| {
-        if let DownloadEvent::Requested { url, destination } = event {
-            // WebView2 ya propone una ruta en Descargas; WebKitGTK puede no hacerlo.
-            if !destination.is_absolute()
-                && let Some(path) = default_download_path(webview.app_handle(), &url)
-            {
-                *destination = path;
+    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(url))
+        .title("Conversa")
+        .inner_size(1100.0, 750.0)
+        .min_inner_size(400.0, 500.0)
+        .visible(visible)
+        .data_directory(profile_dir(app)?)
+        .initialization_script(INIT_SCRIPT)
+        .on_navigation(move |url| match links::classify(url) {
+            Target::Internal => true,
+            Target::External => {
+                open_external(&on_nav, url);
+                false
             }
-        }
-        true
-    })
-    // La navegación está limitada a web.whatsapp.com, así que solo WhatsApp Web puede pedirlos.
-    // Las notificaciones las muestra la propia webview con el sistema de notificaciones nativo.
-    .on_permission_request(|_webview, kind| match kind {
-        PermissionKind::Notifications
-        | PermissionKind::Microphone
-        | PermissionKind::Camera
-        | PermissionKind::ClipboardRead => PermissionResponse::Allow,
-        _ => PermissionResponse::Default,
-    })
-    .on_document_title_changed(|window, title| set_unread(&window, unread_count(&title)))
-    // Resincroniza el CSS con settings.json en cada carga (el de localStorage puede ser antiguo).
-    .on_page_load(|window, payload| {
-        if payload.event() == PageLoadEvent::Finished {
-            let app = window.app_handle();
-            settings::apply_appearance(app, &settings::get(app));
-        }
-    });
+            Target::Chat(web) => {
+                open_chat(&on_nav, web);
+                false
+            }
+            Target::AppSettings => {
+                open_settings(&on_nav);
+                false
+            }
+            Target::Blocked => false,
+        })
+        .on_new_window(move |url, _features| match links::classify(&url) {
+            Target::Internal => NewWindowResponse::Allow,
+            Target::External => {
+                open_external(&on_new, &url);
+                NewWindowResponse::Deny
+            }
+            Target::Chat(web) => {
+                open_chat(&on_new, web);
+                NewWindowResponse::Deny
+            }
+            Target::AppSettings => {
+                open_settings(&on_new);
+                NewWindowResponse::Deny
+            }
+            Target::Blocked => NewWindowResponse::Deny,
+        })
+        .on_download(|webview, event| {
+            if let DownloadEvent::Requested { url, destination } = event {
+                // WebView2 ya propone una ruta en Descargas; WebKitGTK puede no hacerlo.
+                if !destination.is_absolute()
+                    && let Some(path) = default_download_path(webview.app_handle(), &url)
+                {
+                    *destination = path;
+                }
+            }
+            true
+        })
+        // La navegación está limitada a web.whatsapp.com, así que solo WhatsApp Web puede pedirlos.
+        // Las notificaciones las muestra la propia webview con el sistema de notificaciones nativo.
+        .on_permission_request(|_webview, kind| match kind {
+            PermissionKind::Notifications
+            | PermissionKind::Microphone
+            | PermissionKind::Camera
+            | PermissionKind::ClipboardRead => PermissionResponse::Allow,
+            _ => PermissionResponse::Default,
+        })
+        .on_document_title_changed(|window, title| set_unread(&window, unread_count(&title)))
+        // Resincroniza el CSS con settings.json en cada carga (el de localStorage puede ser antiguo).
+        .on_page_load(|window, payload| {
+            if payload.event() == PageLoadEvent::Finished {
+                let app = window.app_handle();
+                settings::apply_appearance(app, &settings::get(app));
+            }
+        });
 
     #[cfg(target_os = "linux")]
     let builder = builder.user_agent(LINUX_USER_AGENT);

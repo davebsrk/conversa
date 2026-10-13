@@ -23,8 +23,8 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
 - Número de chats sin leer (sin contar los silenciados) en el icono de la barra de tareas y de la
   bandeja, como en la app oficial.
 - Cerrar la ventana la manda a la bandeja; se sale desde el menú de la bandeja.
-- Notificaciones nativas de Windows con la foto del contacto y **respuesta rápida** desde la propia
-  notificación; al pulsarla se abre ese chat. En Linux, las notificaciones del sistema.
+- Notificaciones nativas de Windows con la foto del contacto, **respuesta rápida** y botón
+  **Marcar como leído** desde la propia notificación; al pulsarla se abre ese chat. En Linux, las notificaciones del sistema.
 - **Ajustes** integrados en la ventana (engranaje en la barra lateral de WhatsApp o desde la
   bandeja): tamaño del texto (zoom), iniciar con el sistema, cerrar a la bandeja o salir,
   actualizaciones (avisar, instalar solas o no buscar), ocultar el texto de los mensajes y el atajo.

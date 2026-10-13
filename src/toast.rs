@@ -29,6 +29,9 @@ use windows::core::{BOOL, HSTRING, IInspectable, Interface, PWSTR};
 /// Igual que el identificador de la app: es el que pone el instalador NSIS a sus accesos directos.
 const AUMID: &str = "io.github.davebsrk.conversa";
 const REPLY_INPUT: &str = "reply";
+/// `arguments` del botón "Marcar como leído".
+const MARK_READ: &str = "markRead";
+const MARK_READ_ATTEMPTS: u32 = 15;
 const MAX_PENDING: usize = 100;
 /// Intentos de enviar una respuesta (cada 200 ms) antes de rendirse y mostrar la ventana.
 const REPLY_ATTEMPTS: u32 = 25;
@@ -160,6 +163,7 @@ impl Toast {
                 <actions>
                     <input id="{REPLY_INPUT}" type="text" placeHolderContent="Escribe una respuesta"/>
                     <action content="Enviar" arguments="reply" hint-inputId="{REPLY_INPUT}"/>
+                    <action content="Marcar como leído" arguments="{MARK_READ}"/>
                 </actions>
                 {audio}
             </toast>"#,
@@ -173,11 +177,11 @@ impl Toast {
         // Un toast por chat: el siguiente mensaje sustituye al anterior.
         let tag = (!self.tag.is_empty()).then(|| short_hash(&self.tag));
         let (app, id, title) = (app.clone(), self.id, self.title);
-        show_xml(&xml, tag, move |reply| {
+        show_xml(&xml, tag, move |action, reply| {
             let (app, title) = (app.clone(), title.clone());
             let _ = app
                 .clone()
-                .run_on_main_thread(move || activated(&app, id, title, reply));
+                .run_on_main_thread(move || activated(&app, id, title, &action, reply));
         })
     }
 }
@@ -209,14 +213,15 @@ pub fn show_simple(
         xml_escape(title),
         xml_escape(body),
     );
-    show_xml(&xml, Some("app".into()), move |_| on_click())
+    show_xml(&xml, Some("app".into()), move |_, _| on_click())
 }
 
-/// Muestra un toast; `on_activated` recibe el texto de la respuesta rápida si se escribió.
+/// Muestra un toast; `on_activated` recibe los `arguments` de lo pulsado (el toast o un botón) y
+/// el texto de la respuesta rápida si se escribió.
 fn show_xml(
     xml: &str,
     tag: Option<String>,
-    on_activated: impl Fn(Option<String>) + Send + 'static,
+    on_activated: impl Fn(String, Option<String>) + Send + 'static,
 ) -> windows::core::Result<()> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -229,24 +234,37 @@ fn show_xml(
     }
     toast.Activated(&TypedEventHandler::new(
         move |_, args: windows::core::Ref<IInspectable>| {
-            let reply = args
+            let args = args
                 .as_ref()
-                .and_then(|args| args.cast::<ToastActivatedEventArgs>().ok())
+                .and_then(|args| args.cast::<ToastActivatedEventArgs>().ok());
+            let action = args
+                .as_ref()
+                .and_then(|args| args.Arguments().ok())
+                .map(|value| value.to_string())
+                .unwrap_or_default();
+            let reply = args
                 .and_then(|args| args.UserInput().ok())
                 .and_then(|input| input.Lookup(&HSTRING::from(REPLY_INPUT)).ok())
                 .and_then(|value| value.cast::<IReference<HSTRING>>().ok())
                 .and_then(|value| value.Value().ok())
                 .map(|value| value.to_string())
                 .filter(|value| !value.trim().is_empty());
-            on_activated(reply);
+            on_activated(action, reply);
             Ok(())
         },
     ))?;
     ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(AUMID))?.Show(&toast)
 }
 
-/// En el hilo principal: avisa a WhatsApp del clic (abre el chat) y envía la respuesta si la hay.
-fn activated(app: &AppHandle, id: u64, title: String, reply: Option<String>) {
+/// En el hilo principal: "Marcar como leído" no abre nada; el resto avisa a WhatsApp del clic
+/// (abre el chat) y envía la respuesta si la hay.
+fn activated(app: &AppHandle, id: u64, title: String, action: &str, reply: Option<String>) {
+    if action == MARK_READ {
+        if let Some(webview) = app.get_webview(crate::MAIN_WINDOW) {
+            mark_read(webview, title, MARK_READ_ATTEMPTS);
+        }
+        return;
+    }
     let notification = PENDING.with_borrow(|pending| {
         pending
             .iter()
@@ -300,6 +318,109 @@ fn send_reply(webview: Webview, title: String, text: String, attempts: u32) {
             std::thread::sleep(Duration::from_millis(200));
             send_reply(webview, title, text, attempts - 1);
         });
+    });
+}
+
+/// Marca el chat como leído desde su menú en la lista de chats, sin abrirlo ni mostrar la ventana.
+/// Solo pulsa la opción cuyo icono es el de "Marcar como leído" (`wds-ic-chat`): en ese menú
+/// también están Eliminar, Vaciar y Bloquear. Si el chat ya estaba leído cierra el menú, y si no
+/// lo encuentra (p. ej. está archivado) lo avisa con una notificación.
+///
+/// WhatsApp solo abre y cierra el menú con ratón y teclado reales, así que el script devuelve qué
+/// hacer (`at:x,y` = clic derecho ahí; `closing`/`already` = cerrar con Esc) y Rust lo envía con el
+/// protocolo de DevTools de WebView2. Un menú solo se acepta si lo acaba de abrir este mismo
+/// intento sobre este chat; cualquier otro se cierra sin tocarlo.
+fn mark_read(webview: Webview, title: String, attempts: u32) {
+    let script = format!(
+        r##"(() => {{
+            const norm = (s) => s.replace(/[^\p{{L}}\p{{N}}]/gu, "").toLowerCase();
+            const title = norm({title});
+            const marker = window.__conversaMarkRead;
+            const menu = document.querySelector('[role="menu"]');
+            if (menu) {{
+                window.__conversaMarkRead = null;
+                if (!marker || marker.title !== title || Date.now() - marker.at > 2000) return "closing";
+                const item = [...menu.querySelectorAll('[role="menuitem"]')]
+                    .find((b) => b.querySelector("svg title")?.textContent === "wds-ic-chat");
+                if (item) {{ item.click(); return "done"; }}
+                return "already";
+            }}
+            const row = [...document.querySelectorAll('#pane-side [role="row"]')]
+                .find((r) => norm(r.querySelector("span[title]")?.getAttribute("title") ?? "") === title);
+            if (!title || !row) return "missing";
+            const rect = row.getBoundingClientRect();
+            if (rect.top < 0 || rect.bottom > innerHeight) {{ row.scrollIntoView({{ block: "center" }}); return "scrolling"; }}
+            window.__conversaMarkRead = {{ title, at: Date.now() }};
+            return `at:${{Math.round(rect.left + 100)}},${{Math.round(rect.top + rect.height / 2)}}`;
+        }})()"##,
+        title = serde_json::to_string(&title).unwrap_or_default(),
+    );
+    let retry = webview.clone();
+    let _ = webview.eval_with_callback(script, move |result| {
+        let result = result.trim_matches('"');
+        if result == "already" || result == "closing" {
+            press_escape(&retry);
+        }
+        if result == "done" || result == "already" {
+            return;
+        }
+        if let Some((x, y)) = result
+            .strip_prefix("at:")
+            .and_then(|at| at.split_once(','))
+            .and_then(|(x, y)| Some((x.parse::<f64>().ok()?, y.parse::<f64>().ok()?)))
+        {
+            send_input(
+                &retry,
+                ["mousePressed", "mouseReleased"].map(|kind| {
+                    (
+                        "Input.dispatchMouseEvent",
+                        format!(
+                            r#"{{"type":"{kind}","x":{x},"y":{y},"button":"right","clickCount":1}}"#
+                        ),
+                    )
+                }),
+            );
+        }
+        if attempts == 0 {
+            let _ = show_simple(
+                "No se pudo marcar como leído",
+                &format!("No encontré el chat de {title} en la lista. Ábrelo en Conversa."),
+                None,
+                || {},
+            );
+            return;
+        }
+        let (webview, title) = (retry.clone(), title.clone());
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            mark_read(webview, title, attempts - 1);
+        });
+    });
+}
+
+fn press_escape(webview: &Webview) {
+    send_input(
+        webview,
+        ["keyDown", "keyUp"].map(|kind| {
+            ("Input.dispatchKeyEvent", format!(r#"{{"type":"{kind}","key":"Escape","code":"Escape","windowsVirtualKeyCode":27}}"#))
+        }),
+    );
+}
+
+/// Ratón o teclado reales (no simulados desde la página), en orden, vía el protocolo de DevTools
+/// de WebView2. Funciona aunque la ventana esté oculta.
+fn send_input<const N: usize>(webview: &Webview, events: [(&'static str, String); N]) {
+    let _ = webview.with_webview(move |webview| unsafe {
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        for (method, params) in &events {
+            let _ = core.CallDevToolsProtocolMethod(
+                &HSTRING::from(*method),
+                &HSTRING::from(params),
+                None,
+            );
+        }
     });
 }
 

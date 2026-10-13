@@ -1,6 +1,6 @@
 [package]
 name = "conversa"
-version = "0.1.7"
+version = "0.1.8"
 description = "Cliente de escritorio ligero para WhatsApp Web"
 authors = ["Conversa contributors"]
 license = "MIT OR Apache-2.0"
