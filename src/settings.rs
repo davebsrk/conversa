@@ -230,7 +230,8 @@ pub fn appearance(settings: &Settings, current: &str, unread: impl Fn(&str) -> u
 
 fn appearance_css(settings: &Settings) -> String {
     let mut css = String::new();
-    // La columna de la lista de chats es el padre de #side (WhatsApp le da un 30-40 %).
+    // La columna de la lista y el hueco equivalente de la capa del chat (los marca el script
+    // inyectado con data-conversa-list; WhatsApp les da un 30-40 %).
     let width = match settings.list_width {
         ListWidth::Auto => None,
         ListWidth::Narrow => Some("28%"),
@@ -238,7 +239,7 @@ fn appearance_css(settings: &Settings) -> String {
     };
     if let Some(width) = width {
         css.push_str(&format!(
-            "div:has(> #side) {{ flex: 0 0 {width} !important; max-width: {width} !important; min-width: 280px; }}\n"
+            "[data-conversa-list] {{ flex: 0 0 {width} !important; max-width: {width} !important; min-width: 280px; }}\n"
         ));
     }
     if settings.privacy_blur {
@@ -397,8 +398,13 @@ pub async fn remove_account(app: AppHandle, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn check_updates(app: AppHandle) {
-    crate::updates::check_now(app);
+pub async fn check_updates(app: AppHandle) -> Result<Option<String>, String> {
+    crate::updates::check_for_panel(&app).await
+}
+
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> Result<(), String> {
+    crate::updates::install_pending(&app).await
 }
 
 #[cfg(test)]
@@ -442,7 +448,7 @@ mod tests {
         assert!(
             custom
                 .css
-                .contains("div:has(> #side) { flex: 0 0 50% !important")
+                .contains("[data-conversa-list] { flex: 0 0 50% !important")
         );
         assert_eq!(custom.hide, ["filters", "wds-ic-channels"]);
         let parsed: Settings = serde_json::from_str(r#"{"listWidth": "narrow"}"#).unwrap();

@@ -6,6 +6,7 @@
     "allow-get-settings",
     "allow-save-settings",
     "allow-check-updates",
+    "allow-install-update",
     "allow-close-settings",
     "allow-pause-shortcuts",
     "allow-resume-shortcuts",

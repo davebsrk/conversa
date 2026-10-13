@@ -134,6 +134,21 @@ function renderAccounts() {
     gear.before(box);
   }
 }
+// El ancho de la lista: WhatsApp reserva ese ancho dos veces, en la columna de la lista (padre de
+// #side) y en un hueco vacío al principio de la capa superpuesta que contiene el chat abierto. Se
+// marcan los dos con data-conversa-list para que el CSS de los ajustes les dé el mismo ancho.
+function markListColumns() {
+  const column = document.querySelector("#side")?.parentElement;
+  if (!column) return;
+  column.dataset.conversaList = "";
+  for (const layer of column.parentElement.children) {
+    if (layer === column || layer.children.length !== 2 || getComputedStyle(layer).position !== "absolute") continue;
+    const spacer = layer.children[0];
+    if (spacer.dataset.conversaList !== undefined) continue;
+    const style = getComputedStyle(spacer);
+    if (style.flexGrow === "0" && style.flexBasis.endsWith("%")) spacer.dataset.conversaList = "";
+  }
+}
 function outermost(el, isSingle) {
   while (el?.parentElement && isSingle(el.parentElement)) el = el.parentElement;
   return el;
@@ -172,7 +187,7 @@ document.addEventListener("DOMContentLoaded", () => {
   new MutationObserver(() => {
     if (scheduled) return;
     scheduled = true;
-    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); renderAccounts(); });
+    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); renderAccounts(); markListColumns(); });
   }).observe(document.body, { childList: true, subtree: true });
 });
 window.addEventListener("click", (event) => {
@@ -219,6 +234,7 @@ fn main() {
             settings::get_settings,
             settings::save_settings,
             settings::check_updates,
+            settings::install_update,
             settings::close_settings,
             settings::pause_shortcuts,
             settings::resume_shortcuts,
@@ -251,6 +267,7 @@ fn main() {
         .setup(|app| {
             settings::init(app.handle());
             app.manage(accounts::Unread::default());
+            app.manage(updates::PendingUpdate::default());
             accounts::clean_removed_profiles(app.handle());
             #[cfg(windows)]
             toast::register(app.handle())?;

@@ -2,9 +2,10 @@
 //! instala cuando el usuario lo pide (botón de la notificación o "Buscar actualizaciones"), salvo
 //! que en Ajustes se haya elegido instalarlas automáticamente.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::settings::{self, UpdateMode};
@@ -37,16 +38,40 @@ pub fn spawn_periodic_check(app: AppHandle) {
     });
 }
 
-/// Desde el menú de la bandeja: si hay versión nueva la instala directamente (ya la ha pedido).
-pub fn check_now(app: AppHandle) {
-    std::thread::spawn(move || match check(&app) {
-        Ok(Some(update)) => install(&app, update),
-        Ok(None) => notify(
-            "Conversa está actualizada",
-            &format!("Tienes la última versión ({}).", app.package_info().version),
-        ),
-        Err(err) => notify("No se pudo buscar actualizaciones", &err.to_string()),
-    });
+/// La versión que encontró "Buscar ahora" en Ajustes, lista para instalar si el usuario quiere.
+#[derive(Default)]
+pub struct PendingUpdate(Mutex<Option<Update>>);
+
+/// "Buscar ahora" en Ajustes: devuelve la versión nueva si la hay (y la deja preparada).
+pub async fn check_for_panel(app: &AppHandle) -> Result<Option<String>, String> {
+    let update = app
+        .updater()
+        .map_err(|err| err.to_string())?
+        .check()
+        .await
+        .map_err(|err| format!("No se pudo comprobar: {err}"))?;
+    let version = update.as_ref().map(|update| update.version.clone());
+    *app.state::<PendingUpdate>()
+        .0
+        .lock()
+        .expect("actualización") = update;
+    Ok(version)
+}
+
+/// "Actualizar ahora" en Ajustes: instala la versión encontrada y reinicia Conversa.
+pub async fn install_pending(app: &AppHandle) -> Result<(), String> {
+    let update = app
+        .state::<PendingUpdate>()
+        .0
+        .lock()
+        .expect("actualización")
+        .take()
+        .ok_or("Vuelve a buscar actualizaciones.")?;
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|err| format!("No se pudo actualizar: {err}"))?;
+    app.restart();
 }
 
 fn check(app: &AppHandle) -> tauri_plugin_updater::Result<Option<Update>> {

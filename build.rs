@@ -6,6 +6,7 @@ fn main() {
             "get_settings",
             "save_settings",
             "check_updates",
+            "install_update",
             "close_settings",
             "pause_shortcuts",
             "resume_shortcuts",
