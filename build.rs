@@ -9,6 +9,9 @@ fn main() {
             "close_settings",
             "pause_shortcuts",
             "resume_shortcuts",
+            "add_account",
+            "switch_account",
+            "remove_account",
         ]),
     ))
     .expect("error en tauri-build");

@@ -49,6 +49,11 @@
   .shortcut { min-width: 112px; white-space: nowrap; }
   .shortcut.recording { border-color: var(--accent); color: var(--accent); }
   .row .controls { display: flex; align-items: center; gap: 12px; }
+  .account input { font: inherit; color: var(--fg); background: transparent; border: 1px solid transparent; border-radius: 4px; padding: 4px 6px; width: 100%; }
+  .account input:hover, .account input:focus { border-color: var(--line); outline: none; }
+  .account .dot { width: 28px; height: 28px; border-radius: 50%; color: #fff; font-weight: 600; display: grid; place-items: center; flex: none; }
+  .account .current { font-size: 12px; color: var(--accent); white-space: nowrap; }
+  .account button.danger { color: var(--error); }
   #status { min-height: 20px; margin: 12px 4px 0; font-size: 12px; color: var(--muted); }
   #status.error { color: var(--error); }
 </style>
@@ -60,6 +65,13 @@
     </button>
     <h1>Ajustes de Conversa</h1>
   </header>
+
+  <h2>Cuentas</h2>
+  <div class="group" id="accounts"></div>
+  <div class="row" style="padding: 10px 4px 0; min-height: 0;">
+    <div class="text"><small>Cada cuenta tiene su propia sesión: al añadirla, vincúlala escaneando su código QR.</small></div>
+    <button id="addAccount" type="button">Añadir cuenta</button>
+  </div>
 
   <h2>Inicio</h2>
   <div class="group">
@@ -177,8 +189,57 @@
     $("startHiddenRow").classList.toggle("disabled", !$("autostart").checked);
   }
 
+  // Cuentas: renombrar (se guarda al salir del campo), cambiar a otra y eliminar con confirmación.
+  const ACCOUNT_COLORS = ["#059669", "#2563eb", "#d97706", "#db2777", "#7c3aed", "#0891b2"];
+  let accounts = [];
+  function renderAccounts(list, active) {
+    accounts = list;
+    const box = $("accounts");
+    box.replaceChildren(...list.map((account, i) => {
+      const row = document.createElement("div");
+      row.className = "row account";
+      row.dataset.id = account.id;
+      const dot = document.createElement("div");
+      dot.className = "dot";
+      dot.style.background = ACCOUNT_COLORS[i % ACCOUNT_COLORS.length];
+      dot.textContent = ([...account.name.trim()][0] ?? "?").toUpperCase();
+      const name = document.createElement("input");
+      name.value = account.name;
+      name.maxLength = 40;
+      name.setAttribute("aria-label", "Nombre de la cuenta");
+      name.addEventListener("change", () => { account.name = name.value.trim() || account.name; save(); });
+      const actions = document.createElement("div");
+      actions.className = "controls";
+      if (account.id === active) {
+        actions.innerHTML = '<span class="current">Cuenta actual</span>';
+      } else {
+        const use = document.createElement("button");
+        use.type = "button";
+        use.textContent = "Usar";
+        use.addEventListener("click", () => invoke("switch_account", { id: account.id }));
+        actions.append(use);
+      }
+      if (list.length > 1) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "danger";
+        remove.textContent = "Eliminar";
+        remove.addEventListener("click", async () => {
+          if (!confirm(`¿Quitar la cuenta "${account.name}" de Conversa?\n\nSe cerrará su sesión en este equipo. Tu cuenta de WhatsApp no se borra.`)) return;
+          try { await invoke("remove_account", { id: account.id }); status("Cuenta quitada"); await load(); }
+          catch (err) { status(String(err), true); }
+        });
+        actions.append(remove);
+      }
+      row.append(dot, name, actions);
+      return row;
+    }));
+  }
+  $("addAccount").addEventListener("click", () => invoke("add_account").catch((err) => status(String(err), true)));
+
   async function load() {
     const { settings, autostart, version } = await invoke("get_settings");
+    renderAccounts(settings.accounts, settings.activeAccount);
     $("autostart").checked = autostart;
     for (const id of toggles) $(id).checked = settings[id];
     $("updates").value = settings.updates;
@@ -196,6 +257,7 @@
     settings.zoom = Number($("zoom").value);
     settings.listWidth = $("listWidth").value;
     for (const id of shortcutButtons) settings[id] = $(id).dataset.value;
+    settings.accounts = accounts;
     try {
       await invoke("save_settings", { settings, autostart: $("autostart").checked });
       status("Guardado");

@@ -17,6 +17,8 @@ pub enum Target {
     /// `conversa://settings`: el botón de Ajustes que inyectamos en la barra lateral de WhatsApp.
     /// Es una navegación que interceptamos, así la página no necesita acceso a la API de la app.
     AppSettings,
+    /// `conversa://account/<id>`: los botones de cuenta de la barra lateral.
+    SwitchAccount(String),
     /// Esquemas desconocidos: no se abren en ningún sitio.
     Blocked,
 }
@@ -29,6 +31,14 @@ pub fn classify(url: &Url) -> Target {
         "http" | "https" if url.host_str() == Some(WHATSAPP_WEB_HOST) => Target::Internal,
         "http" | "https" | "mailto" | "tel" => Target::External,
         "about" | "blob" | "data" => Target::Internal,
+        "conversa" if url.host_str() == Some("account") => {
+            let id = url.path().trim_start_matches('/');
+            if !id.is_empty() && id.len() <= 40 && id.chars().all(|c| c.is_ascii_alphanumeric()) {
+                Target::SwitchAccount(id.to_string())
+            } else {
+                Target::Blocked
+            }
+        }
         "conversa" => Target::AppSettings,
         _ => Target::Blocked,
     }
@@ -203,6 +213,22 @@ mod tests {
     #[test]
     fn conversa_scheme_opens_settings() {
         assert_eq!(target("conversa://settings"), Target::AppSettings);
+    }
+
+    #[test]
+    fn conversa_scheme_switches_accounts() {
+        assert_eq!(
+            target("conversa://account/a1791234"),
+            Target::SwitchAccount("a1791234".into())
+        );
+        assert_eq!(
+            target("conversa://account/default"),
+            Target::SwitchAccount("default".into())
+        );
+        // Solo letras y números: nada de rutas ni caracteres codificados.
+        assert_eq!(target("conversa://account/a%2Fb"), Target::Blocked);
+        assert_eq!(target("conversa://account/a/b"), Target::Blocked);
+        assert_eq!(target("conversa://account/"), Target::Blocked);
     }
 
     #[test]

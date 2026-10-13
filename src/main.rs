@@ -1,6 +1,7 @@
 // En release no abrimos una consola junto a la ventana en Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod accounts;
 #[cfg(windows)]
 mod badge;
 mod links;
@@ -17,8 +18,9 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::webview::{
     DownloadEvent, NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse,
 };
+use tauri::window::WindowBuilder;
 use tauri::{
-    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Manager, Url, Webview, WebviewBuilder, WebviewUrl, Window, WindowEvent, Wry,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
@@ -49,11 +51,14 @@ const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 /// - Añade un botón de Ajustes de Conversa a la barra lateral de WhatsApp, copiando el aspecto
 ///   del botón "Contenido multimedia". Al pulsarlo navega a `conversa://settings`, que
 ///   interceptamos en `on_navigation`. Si WhatsApp redibuja la barra, se vuelve a añadir.
-const INIT_SCRIPT: &str = r#"
+const INIT_SCRIPT: &str = r##"
+const ACCOUNT_COLORS = ["#059669", "#2563eb", "#d97706", "#db2777", "#7c3aed", "#0891b2"];
+const GEAR_SVG = '<svg viewBox="0 0 24 24" height="24" width="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
 // Aspecto según los ajustes (privacidad, ancho de la lista, elementos ocultos). Rust lo envía con
 // conversaApplyAppearance y se guarda en localStorage para aplicarlo aquí, antes de que se pinte
 // nada, en cada carga de la página.
 let conversaHidden = [];
+let conversaAccounts = [];
 window.conversaApplyAppearance = (appearance) => {
   try { localStorage.setItem("conversa-appearance", JSON.stringify(appearance)); } catch {}
   let style = document.getElementById("conversa-css");
@@ -64,7 +69,9 @@ window.conversaApplyAppearance = (appearance) => {
   }
   style.textContent = appearance.css;
   conversaHidden = appearance.hide;
+  conversaAccounts = appearance.accounts ?? [];
   hideItems();
+  renderAccounts();
 };
 (function applySavedAppearance() {
   if (!document.documentElement) return requestAnimationFrame(applySavedAppearance);
@@ -76,6 +83,57 @@ window.conversaApplyAppearance = (appearance) => {
 })();
 // Oculta botones de la barra lateral (por el título de su icono, que no depende del idioma) y la
 // barra de filtros de la lista de chats. Se repite cada vez que WhatsApp redibuja.
+// Con varias cuentas: un botón redondo por cuenta encima del engranaje. El de esta cuenta va
+// marcado; los demás llevan un punto si tienen chats sin leer. Navegan a conversa://account/<id>.
+function renderAccounts() {
+  const gear = document.getElementById("conversa-settings");
+  // Sin sesión (pantalla del QR) no hay barra lateral: los botones flotan abajo a la izquierda,
+  // con un engranaje para llegar a Ajustes.
+  if (!document.body) return; // aún cargando: el observador lo pintará después
+  const floating = !document.querySelector("#side");
+  let box = document.getElementById("conversa-accounts");
+  const signature = JSON.stringify(conversaAccounts) + floating;
+  if (conversaAccounts.length < 2 || (!gear && !floating)) return box?.remove();
+  if (box?.dataset.signature === signature && (floating || box.nextElementSibling === gear)) return;
+  box?.remove();
+  box = document.createElement("div");
+  box.id = "conversa-accounts";
+  box.dataset.signature = signature;
+  box.style.cssText = floating
+    ? "position:fixed;bottom:16px;left:16px;z-index:9999;display:flex;flex-direction:column;gap:10px;align-items:center;padding:8px;border-radius:24px;background:rgba(0,0,0,.35);"
+    : "display:flex;flex-direction:column;align-items:center;gap:10px;padding:8px 0 4px;";
+  conversaAccounts.forEach((account, i) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.account = account.id;
+    const label = account.unread ? `${account.name} (${account.unread} sin leer)` : account.name;
+    button.title = account.current ? `${label} — cuenta actual` : `Cambiar a ${label}`;
+    button.setAttribute("aria-label", button.title);
+    button.textContent = ([...account.name.trim()][0] ?? "?").toUpperCase();
+    button.style.cssText = `position:relative;width:32px;height:32px;border-radius:50%;border:0;padding:0;cursor:pointer;font:600 14px/32px system-ui,sans-serif;color:#fff;background:${ACCOUNT_COLORS[i % ACCOUNT_COLORS.length]};` +
+      (account.current ? "box-shadow:0 0 0 2px #fff,0 0 0 4px #10b981;" : "opacity:.8;");
+    if (account.unread && !account.current) {
+      const dot = document.createElement("span");
+      dot.style.cssText = "position:absolute;top:-2px;right:-2px;width:11px;height:11px;border-radius:50%;background:#e5383b;border:2px solid #fff;";
+      button.append(dot);
+    }
+    button.addEventListener("click", () => { if (!account.current) location.href = "conversa://account/" + account.id; });
+    box.append(button);
+  });
+  if (floating) {
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.title = "Ajustes de Conversa";
+    settings.setAttribute("aria-label", settings.title);
+    settings.innerHTML = GEAR_SVG;
+    settings.style.cssText = "width:32px;height:32px;border:0;border-radius:50%;padding:4px;cursor:pointer;color:#fff;background:transparent;";
+    settings.addEventListener("click", () => { location.href = "conversa://settings"; });
+    box.append(settings);
+    document.body.append(box);
+  } else {
+    gear.before(box);
+  }
+}
 function outermost(el, isSingle) {
   while (el?.parentElement && isSingle(el.parentElement)) el = el.parentElement;
   return el;
@@ -94,7 +152,6 @@ document.addEventListener("DOMContentLoaded", () => {
   style.textContent = `#side > [role="button"]:has([data-icon="wa-square-icon"]) { display: none !important; }`;
   document.head.append(style);
 });
-const GEAR_SVG = '<svg viewBox="0 0 24 24" height="24" width="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
 function addSettingsButton() {
   const media = document.querySelector('header[data-testid="chatlist-header"] button[data-navbar-item-index="4"]');
   if (!media || document.getElementById("conversa-settings")) return;
@@ -115,7 +172,7 @@ document.addEventListener("DOMContentLoaded", () => {
   new MutationObserver(() => {
     if (scheduled) return;
     scheduled = true;
-    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); });
+    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); renderAccounts(); });
   }).observe(document.body, { childList: true, subtree: true });
 });
 window.addEventListener("click", (event) => {
@@ -127,7 +184,7 @@ window.addEventListener("click", (event) => {
   event.stopImmediatePropagation();
   window.open(url.href, "_blank", "noopener");
 }, true);
-"#;
+"##;
 
 /// WhatsApp Web rechaza WebKitGTK como "navegador no soportado", así que en Linux nos
 /// presentamos como un Chrome de escritorio. En Windows WebView2 ya envía un UA de Edge válido.
@@ -164,7 +221,10 @@ fn main() {
             settings::check_updates,
             settings::close_settings,
             settings::pause_shortcuts,
-            settings::resume_shortcuts
+            settings::resume_shortcuts,
+            settings::add_account,
+            settings::switch_account,
+            settings::remove_account
         ])
         .on_window_event(|window, event| {
             if window.label() != MAIN_WINDOW {
@@ -182,7 +242,7 @@ fn main() {
                     }
                 }
                 WindowEvent::Resized(_) => {
-                    set_background(app, window.is_minimized().unwrap_or(false));
+                    refresh_memory(app);
                     settings::resize_panel(window);
                 }
                 _ => {}
@@ -190,6 +250,8 @@ fn main() {
         })
         .setup(|app| {
             settings::init(app.handle());
+            app.manage(accounts::Unread::default());
+            accounts::clean_removed_profiles(app.handle());
             #[cfg(windows)]
             toast::register(app.handle())?;
             let start_hidden = std::env::args().any(|arg| arg == MINIMIZED_ARG)
@@ -203,14 +265,18 @@ fn main() {
                 .flatten()
                 .and_then(|urls| urls.iter().find_map(links::to_whatsapp_web))
                 .unwrap_or_else(|| WHATSAPP_URL.parse().expect("URL válida"));
-            let window = build_main_window(app.handle(), !start_hidden, start_url)?;
-            let _ = window.set_zoom(settings::get(app.handle()).zoom);
-            // En Linux WebKitGTK ya envía las notificaciones web al sistema.
-            #[cfg(windows)]
-            toast::attach(&window);
-            if start_hidden {
-                set_background(app.handle(), true);
+            let window = build_window(app.handle(), !start_hidden)?;
+            let settings = settings::get(app.handle());
+            for account in &settings.accounts {
+                let active = account.id == settings.active_account;
+                let url = if active {
+                    start_url.clone()
+                } else {
+                    WHATSAPP_URL.parse().expect("URL válida")
+                };
+                accounts::create(app.handle(), &window, account, url, active)?;
             }
+            refresh_memory(app.handle());
             build_tray(app.handle())?;
 
             // Otra app puede tener ya un atajo: no es motivo para no arrancar.
@@ -234,11 +300,6 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error al iniciar Conversa");
-}
-
-/// Un directorio de datos por cuenta: deja preparada la multicuenta.
-fn profile_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
-    Ok(app.path().app_data_dir()?.join("profiles").join("default"))
 }
 
 /// Lo que hace un atajo global.
@@ -290,16 +351,23 @@ fn pause_shortcuts(app: &AppHandle) {
     let _ = app.global_shortcut().unregister_all();
 }
 
-fn build_main_window(app: &AppHandle, visible: bool, url: Url) -> tauri::Result<WebviewWindow> {
-    let on_nav = app.clone();
-    let on_new = app.clone();
-
-    let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::External(url))
+/// La ventana principal; cada cuenta de WhatsApp es una webview dentro de ella (ver `accounts`).
+fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<Window> {
+    WindowBuilder::new(app, MAIN_WINDOW)
         .title("Conversa")
         .inner_size(1100.0, 750.0)
         .min_inner_size(400.0, 500.0)
         .visible(visible)
-        .data_directory(profile_dir(app)?)
+        .build()
+}
+
+/// La webview de WhatsApp Web de una cuenta, con su propia carpeta de datos (sesión).
+fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<WebviewBuilder<Wry>> {
+    let on_nav = app.clone();
+    let on_new = app.clone();
+
+    let builder = WebviewBuilder::new(accounts::label(id), WebviewUrl::External(url))
+        .data_directory(accounts::profile_dir(app, id)?)
         .initialization_script(INIT_SCRIPT)
         .on_navigation(move |url| match links::classify(url) {
             Target::Internal => true,
@@ -313,6 +381,10 @@ fn build_main_window(app: &AppHandle, visible: bool, url: Url) -> tauri::Result<
             }
             Target::AppSettings => {
                 open_settings(&on_nav);
+                false
+            }
+            Target::SwitchAccount(id) => {
+                switch_account(&on_nav, id);
                 false
             }
             Target::Blocked => false,
@@ -329,6 +401,10 @@ fn build_main_window(app: &AppHandle, visible: bool, url: Url) -> tauri::Result<
             }
             Target::AppSettings => {
                 open_settings(&on_new);
+                NewWindowResponse::Deny
+            }
+            Target::SwitchAccount(id) => {
+                switch_account(&on_new, id);
                 NewWindowResponse::Deny
             }
             Target::Blocked => NewWindowResponse::Deny,
@@ -353,19 +429,24 @@ fn build_main_window(app: &AppHandle, visible: bool, url: Url) -> tauri::Result<
             | PermissionKind::ClipboardRead => PermissionResponse::Allow,
             _ => PermissionResponse::Default,
         })
-        .on_document_title_changed(|window, title| set_unread(&window, unread_count(&title)))
-        // Resincroniza el CSS con settings.json en cada carga (el de localStorage puede ser antiguo).
-        .on_page_load(|window, payload| {
+        .on_document_title_changed(|webview, title| {
+            if let Some(id) = accounts::id_of(webview.label()) {
+                let app = webview.app_handle();
+                accounts::set_unread(app, id, unread_count(&title));
+                refresh_unread(app);
+            }
+        })
+        // Resincroniza el aspecto con settings.json en cada carga (el de localStorage puede ser antiguo).
+        .on_page_load(|webview, payload| {
             if payload.event() == PageLoadEvent::Finished {
-                let app = window.app_handle();
-                settings::apply_appearance(app, &settings::get(app));
+                settings::apply_appearance_to(&webview, &settings::get(webview.app_handle()));
             }
         });
 
     #[cfg(target_os = "linux")]
     let builder = builder.user_agent(LINUX_USER_AGENT);
 
-    builder.build()
+    Ok(builder)
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -419,9 +500,18 @@ fn open_chat(app: &AppHandle, web: Url) {
     let app = app.clone();
     std::thread::spawn(move || {
         show_window(&app);
-        if let Some(webview) = app.get_webview(MAIN_WINDOW) {
+        if let Some(webview) = accounts::active(&app) {
             let _ = webview.navigate(web);
         }
+    });
+}
+
+/// Desde otro hilo, por lo mismo que `open_settings`.
+fn switch_account(app: &AppHandle, id: String) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        accounts::switch(&app, &id);
+        settings::apply_appearance(&app, &settings::get(&app));
     });
 }
 
@@ -436,8 +526,8 @@ fn open_settings(app: &AppHandle) {
     });
 }
 
-// La ventana principal y su webview (WhatsApp) se buscan por separado: con el panel de Ajustes
-// abierto la ventana tiene dos webviews y `get_webview_window` deja de encontrarla.
+// La ventana principal y sus webviews (una por cuenta, más el panel de Ajustes) se buscan por
+// separado: con varias webviews `get_webview_window` no encuentra la ventana.
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_window(MAIN_WINDOW) {
         let _ = window.unminimize();
@@ -466,18 +556,34 @@ fn toggle_window(app: &AppHandle) {
     }
 }
 
-/// Modo híbrido: oculta o minimizada, pedimos a WebView2 que libere toda la memoria posible,
-/// pero sin suspender la página, para que sigan llegando mensajes y notificaciones al momento.
+/// Modo híbrido: con la ventana oculta o minimizada, y para las cuentas que no se están viendo,
+/// pedimos a WebView2 que libere toda la memoria posible, pero sin suspender la página, para que
+/// sigan llegando mensajes y notificaciones al momento.
 fn set_background(app: &AppHandle, background: bool) {
+    let active = accounts::label(&settings::get(app).active_account);
+    for webview in accounts::all(app) {
+        set_memory_low(&webview, background || webview.label() != active);
+    }
+}
+
+/// `set_background` según el estado actual de la ventana.
+fn refresh_memory(app: &AppHandle) {
+    let background = app.get_window(MAIN_WINDOW).is_none_or(|window| {
+        !window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false)
+    });
+    set_background(app, background);
+}
+
+fn set_memory_low(webview: &Webview, low: bool) {
     #[cfg(windows)]
-    if let Some(webview) = app.get_webview(MAIN_WINDOW) {
+    {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL, ICoreWebView2_19,
         };
         use windows::core::Interface;
 
-        let level = if background {
+        let level = if low {
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
         } else {
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
@@ -492,7 +598,7 @@ fn set_background(app: &AppHandle, background: bool) {
     }
     // ponytail: WebKitGTK no tiene un equivalente directo; en Linux no hacemos nada de momento.
     #[cfg(not(windows))]
-    let _ = (app, background);
+    let _ = (webview, low);
 }
 
 /// WhatsApp Web pone los no leídos en el título: "(3) WhatsApp".
@@ -504,17 +610,31 @@ fn unread_count(title: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// `count` es el número de chats sin leer que WhatsApp Web pone en su título (sin los silenciados).
-fn set_unread(window: &WebviewWindow, count: u32) {
+/// Título, bandeja e icono de la barra de tareas con el total de chats sin leer de todas las cuentas
+/// (lo que WhatsApp Web pone en su título: sin los silenciados). Las otras cuentas lo muestran en
+/// sus botones de la barra lateral.
+fn refresh_unread(app: &AppHandle) {
+    let settings = settings::get(app);
+    let count = settings
+        .accounts
+        .iter()
+        .map(|account| accounts::unread(app, &account.id))
+        .sum::<u32>();
+    let Some(window) = app.get_window(MAIN_WINDOW) else {
+        return;
+    };
     let label = match count {
         0 => "Conversa".to_string(),
         n => format!("({n}) Conversa"),
     };
     let _ = window.set_title(&label);
 
-    if let Some(tray) = window.app_handle().tray_by_id(TRAY) {
-        let _ = tray.set_icon(tray_icon(window.app_handle(), count));
+    if let Some(tray) = app.tray_by_id(TRAY) {
+        let _ = tray.set_icon(tray_icon(app, count));
         let _ = tray.set_tooltip(Some(&label));
+    }
+    if settings.accounts.len() > 1 {
+        settings::apply_appearance(app, &settings);
     }
 
     #[cfg(windows)]

@@ -20,6 +20,8 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
 ## Funciones
 
 - Todo lo que ofrece WhatsApp Web: chats, grupos, multimedia, notas de voz, estados, encuestas…
+- **Varias cuentas** en la misma ventana, con botones para cambiar en la barra lateral. Las que no
+  estás viendo siguen recibiendo mensajes en modo de bajo consumo.
 - Número de chats sin leer (sin contar los silenciados) en el icono de la barra de tareas y de la
   bandeja, como en la app oficial.
 - Cerrar la ventana la manda a la bandeja; se sale desde el menú de la bandeja.

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, Webview, WebviewWindow};
+use tauri::{AppHandle, Manager, Webview};
 use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_24, ICoreWebView2Notification};
 use webview2_com::{NotificationReceivedEventHandler, take_pwstr};
 use windows::Data::Xml::Dom::XmlDocument;
@@ -70,10 +70,11 @@ pub fn register(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Sustituye las notificaciones de WebView2 por toasts nativos.
-pub fn attach(window: &WebviewWindow) {
-    let app = window.app_handle().clone();
-    let _ = window.with_webview(move |webview| unsafe {
+/// Sustituye las notificaciones de WebView2 de una cuenta por toasts nativos.
+pub fn attach(webview: &Webview) {
+    let app = webview.app_handle().clone();
+    let label = webview.label().to_string();
+    let _ = webview.with_webview(move |webview| unsafe {
         let Ok(core) = webview.controller().CoreWebView2() else {
             return;
         };
@@ -96,6 +97,7 @@ pub fn attach(window: &WebviewWindow) {
             };
             let toast = Toast {
                 id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                webview: label.clone(),
                 title: text(ICoreWebView2Notification::Title),
                 body: text(ICoreWebView2Notification::Body),
                 tag: text(ICoreWebView2Notification::Tag),
@@ -130,6 +132,8 @@ pub fn attach(window: &WebviewWindow) {
 
 struct Toast {
     id: u64,
+    /// La webview (cuenta) de la que viene.
+    webview: String,
     title: String,
     body: String,
     tag: String,
@@ -148,6 +152,18 @@ impl Toast {
                 )
             })
             .unwrap_or_default();
+        // Con varias cuentas, la notificación dice de cuál es.
+        let settings = crate::settings::get(app);
+        let account = crate::accounts::id_of(&self.webview)
+            .and_then(|id| settings.accounts.iter().find(|a| a.id == id))
+            .filter(|_| settings.accounts.len() > 1)
+            .map(|a| {
+                format!(
+                    r#"<text placement="attribution">{}</text>"#,
+                    xml_escape(&a.name)
+                )
+            })
+            .unwrap_or_default();
         let audio = if self.silent {
             r#"<audio silent="true"/>"#
         } else {
@@ -158,6 +174,7 @@ impl Toast {
                 <visual><binding template="ToastGeneric">
                     <text hint-maxLines="1">{title}</text>
                     <text>{body}</text>
+                    {account}
                     {picture}
                 </binding></visual>
                 <actions>
@@ -168,20 +185,21 @@ impl Toast {
                 {audio}
             </toast>"#,
             title = xml_escape(&self.title),
-            body = if crate::settings::get(app).message_preview {
+            body = if settings.message_preview {
                 xml_escape(&self.body)
             } else {
                 "Nuevo mensaje".into()
             },
         );
-        // Un toast por chat: el siguiente mensaje sustituye al anterior.
-        let tag = (!self.tag.is_empty()).then(|| short_hash(&self.tag));
-        let (app, id, title) = (app.clone(), self.id, self.title);
+        // Un toast por chat (y cuenta): el siguiente mensaje sustituye al anterior.
+        let tag =
+            (!self.tag.is_empty()).then(|| short_hash(&format!("{}{}", self.webview, self.tag)));
+        let (app, id, webview, title) = (app.clone(), self.id, self.webview, self.title);
         show_xml(&xml, tag, move |action, reply| {
-            let (app, title) = (app.clone(), title.clone());
+            let (app, webview, title) = (app.clone(), webview.clone(), title.clone());
             let _ = app
                 .clone()
-                .run_on_main_thread(move || activated(&app, id, title, &action, reply));
+                .run_on_main_thread(move || activated(&app, id, &webview, title, &action, reply));
         })
     }
 }
@@ -257,10 +275,17 @@ fn show_xml(
 }
 
 /// En el hilo principal: "Marcar como leído" no abre nada; el resto avisa a WhatsApp del clic
-/// (abre el chat) y envía la respuesta si la hay.
-fn activated(app: &AppHandle, id: u64, title: String, action: &str, reply: Option<String>) {
+/// (abre el chat) y envía la respuesta si la hay. Todo en la cuenta de la que vino la notificación.
+fn activated(
+    app: &AppHandle,
+    id: u64,
+    webview: &str,
+    title: String,
+    action: &str,
+    reply: Option<String>,
+) {
     if action == MARK_READ {
-        if let Some(webview) = app.get_webview(crate::MAIN_WINDOW) {
+        if let Some(webview) = app.get_webview(webview) {
             mark_read(webview, title, MARK_READ_ATTEMPTS);
         }
         return;
@@ -276,9 +301,15 @@ fn activated(app: &AppHandle, id: u64, title: String, action: &str, reply: Optio
             let _ = notification.ReportClicked();
         }
     }
-    match (reply, app.get_webview(crate::MAIN_WINDOW)) {
+    match (reply, app.get_webview(webview)) {
         (Some(text), Some(webview)) => send_reply(webview, title, text, REPLY_ATTEMPTS),
-        _ => crate::show_window(app),
+        _ => {
+            if let Some(account) = crate::accounts::id_of(webview) {
+                crate::accounts::switch(app, account);
+                crate::settings::apply_appearance(app, &crate::settings::get(app));
+            }
+            crate::show_window(app);
+        }
     }
 }
 

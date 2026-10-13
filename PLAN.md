@@ -109,4 +109,4 @@ Principios:
 | 3 — Rendimiento | Hecha en Windows: 155 MB frente a 631 MB de la oficial (minimizadas). En Linux no hay equivalente en WebKitGTK |
 | 4 — Linux | Compila en la CI; falta probarlo en un escritorio Linux real |
 | 5 — Distribución | Workflow de release listo (NSIS, portable, deb, rpm, AppImage, Flatpak; sin MSI: el actualizador lo elegía para instalaciones hechas con NSIS) y PKGBUILD. Pendiente: secretos de firma, primer release, AUR y winget (`wingetcreate new <url del instalador>`) |
-| 6 — Después del MVP | Pendiente: multicuenta (los perfiles ya están aislados) |
+| 6 — Después del MVP | Hecho (0.1.5–0.2.0): enlaces de WhatsApp, modo privacidad, aspecto, "Marcar como leído", atajos configurables y varias cuentas |
