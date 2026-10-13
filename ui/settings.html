@@ -87,6 +87,14 @@
     </div>
   </div>
 
+  <h2>Privacidad</h2>
+  <div class="group">
+    <label class="row">
+      <div class="text">Desenfocar chats y mensajes<small>Se ven al pasar el ratón por encima. Útil si compartes pantalla o hay gente alrededor.</small></div>
+      <div class="switch"><input type="checkbox" id="privacyBlur"><span></span></div>
+    </label>
+  </div>
+
   <h2>Ventana</h2>
   <div class="group">
     <label class="row">
@@ -128,7 +136,7 @@
 <script>
   const invoke = window.__TAURI_INTERNALS__.invoke;
   const $ = (id) => document.getElementById(id);
-  const toggles = ["startHidden", "closeToTray", "globalShortcut", "messagePreview"];
+  const toggles = ["startHidden", "closeToTray", "globalShortcut", "messagePreview", "privacyBlur"];
   const status = (text, error = false) => { $("status").textContent = text; $("status").className = error ? "error" : ""; };
 
   function syncStartHidden() {

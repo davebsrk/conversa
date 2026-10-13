@@ -33,6 +33,7 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
 - Los enlaces de WhatsApp (`wa.me`, `whatsapp://`, invitaciones a grupos) se abren en Conversa,
   tanto desde el navegador como desde un chat.
 - Sin el aviso "Obtener WhatsApp para Windows".
+- **Modo privacidad**: desenfoca la lista de chats y los mensajes hasta pasar el ratón por encima.
 - Recuerda el tamaño y la posición de la ventana.
 - Avisa cuando hay una versión nueva y se actualiza con un clic (o sola, si lo eliges en Ajustes).
 

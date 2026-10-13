@@ -27,6 +27,8 @@ pub struct Settings {
     pub global_shortcut: bool,
     /// Zoom de WhatsApp Web (1.0 = 100 %), para quien necesita letra más grande.
     pub zoom: f64,
+    /// Desenfocar la lista de chats y los mensajes hasta pasar el ratón por encima.
+    pub privacy_blur: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +40,7 @@ impl Default for Settings {
             message_preview: true,
             global_shortcut: true,
             zoom: 1.0,
+            privacy_blur: false,
         }
     }
 }
@@ -122,6 +125,30 @@ pub fn close_settings(app: AppHandle) {
     }
 }
 
+/// CSS que Conversa añade a WhatsApp Web según los ajustes.
+pub fn appearance_css(settings: &Settings) -> String {
+    let mut css = String::new();
+    if settings.privacy_blur {
+        // Lista de chats, mensajes y cabecera del chat; se ven nítidos al pasar el ratón.
+        css.push_str(
+            "#pane-side [role=\"row\"], #main [role=\"row\"], #main header \
+             { filter: blur(7px); transition: filter .15s ease; }\n\
+             #pane-side [role=\"row\"]:hover, #main [role=\"row\"]:hover, #main header:hover \
+             { filter: none; }\n",
+        );
+    }
+    css
+}
+
+/// Aplica el CSS de los ajustes a WhatsApp Web. También lo guarda en su `localStorage`, de donde
+/// lo lee el script inicial al recargar: así se aplica desde el primer instante, sin parpadeo.
+pub fn apply_appearance(app: &AppHandle, settings: &Settings) {
+    if let Some(webview) = app.get_webview(crate::MAIN_WINDOW) {
+        let css = serde_json::to_string(&appearance_css(settings)).expect("JSON");
+        let _ = webview.eval(format!("window.conversaApplyCss({css})"));
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
@@ -155,6 +182,7 @@ pub fn save_settings(app: AppHandle, settings: Settings, autostart: bool) -> Res
     if let Some(webview) = app.get_webview(crate::MAIN_WINDOW) {
         let _ = webview.set_zoom(settings.zoom.clamp(0.5, 3.0));
     }
+    apply_appearance(&app, &settings);
 
     let path = path(&app).ok_or("No se encontró la carpeta de configuración")?;
     std::fs::create_dir_all(path.parent().expect("tiene carpeta"))
@@ -180,6 +208,17 @@ mod tests {
         assert!(settings.message_preview);
         assert!(settings.updates == UpdateMode::Notify);
         assert_eq!(settings.zoom, 1.0);
+        assert!(!settings.privacy_blur);
+    }
+
+    #[test]
+    fn privacy_blur_adds_css_only_when_enabled() {
+        let mut settings = Settings::default();
+        assert_eq!(appearance_css(&settings), "");
+        settings.privacy_blur = true;
+        let css = appearance_css(&settings);
+        assert!(css.contains("#pane-side [role=\"row\"]") && css.contains("blur(7px)"));
+        assert!(css.contains(":hover"));
     }
 
     #[test]

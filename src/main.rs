@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse};
+use tauri::webview::{
+    DownloadEvent, NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse,
+};
 use tauri::{
     AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
@@ -38,6 +40,7 @@ const TRAY_BASE_ICON: &[u8] = include_bytes!("../icons/64x64.png");
 #[cfg(not(windows))]
 const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 /// Se inyecta en WhatsApp Web al cargar:
+/// - Aplica el CSS de los ajustes (modo privacidad, aspecto) guardado en `localStorage`.
 /// - Oculta el botón "Obtener WhatsApp para Windows" del pie de la lista de chats. Si WhatsApp
 ///   cambia su HTML, el selector deja de coincidir y simplemente vuelve a verse.
 /// - WhatsApp cancela el clic en los enlaces para abrirlos con su propio código, que dentro de la
@@ -47,6 +50,22 @@ const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 ///   del botón "Contenido multimedia". Al pulsarlo navega a `conversa://settings`, que
 ///   interceptamos en `on_navigation`. Si WhatsApp redibuja la barra, se vuelve a añadir.
 const INIT_SCRIPT: &str = r#"
+// CSS de los ajustes (privacidad, aspecto): Rust lo actualiza con conversaApplyCss y se guarda en
+// localStorage para aplicarlo aquí, antes de que se pinte nada, en cada carga de la página.
+window.conversaApplyCss = (css) => {
+  try { localStorage.setItem("conversa-css", css); } catch {}
+  let style = document.getElementById("conversa-css");
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "conversa-css";
+    (document.head ?? document.documentElement).append(style);
+  }
+  style.textContent = css;
+};
+(function applySavedCss() {
+  if (!document.documentElement) return requestAnimationFrame(applySavedCss);
+  try { const css = localStorage.getItem("conversa-css"); if (css) window.conversaApplyCss(css); } catch {}
+})();
 document.addEventListener("DOMContentLoaded", () => {
   const style = document.createElement("style");
   style.textContent = `#side > [role="button"]:has([data-icon="wa-square-icon"]) { display: none !important; }`;
@@ -271,7 +290,14 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
         | PermissionKind::ClipboardRead => PermissionResponse::Allow,
         _ => PermissionResponse::Default,
     })
-    .on_document_title_changed(|window, title| set_unread(&window, unread_count(&title)));
+    .on_document_title_changed(|window, title| set_unread(&window, unread_count(&title)))
+    // Resincroniza el CSS con settings.json en cada carga (el de localStorage puede ser antiguo).
+    .on_page_load(|window, payload| {
+        if payload.event() == PageLoadEvent::Finished {
+            let app = window.app_handle();
+            settings::apply_appearance(app, &settings::get(app));
+        }
+    });
 
     #[cfg(target_os = "linux")]
     let builder = builder.user_agent(LINUX_USER_AGENT);
