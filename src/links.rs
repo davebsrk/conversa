@@ -10,6 +10,9 @@ pub enum Target {
     Internal,
     /// Se abre con la aplicación predeterminada del sistema (navegador, correo...).
     External,
+    /// `conversa://settings`: el botón de Ajustes que inyectamos en la barra lateral de WhatsApp.
+    /// Es una navegación que interceptamos, así la página no necesita acceso a la API de la app.
+    AppSettings,
     /// Esquemas desconocidos: no se abren en ningún sitio.
     Blocked,
 }
@@ -19,6 +22,7 @@ pub fn classify(url: &Url) -> Target {
         "http" | "https" if url.host_str() == Some(WHATSAPP_WEB_HOST) => Target::Internal,
         "http" | "https" | "mailto" | "tel" => Target::External,
         "about" | "blob" | "data" => Target::Internal,
+        "conversa" => Target::AppSettings,
         _ => Target::Blocked,
     }
 }
@@ -59,6 +63,11 @@ mod tests {
             target("blob:https://web.whatsapp.com/0f3c8a2e-0000-4000-8000-000000000000"),
             Target::Internal
         );
+    }
+
+    #[test]
+    fn conversa_scheme_opens_settings() {
+        assert_eq!(target("conversa://settings"), Target::AppSettings);
     }
 
     #[test]

@@ -42,11 +42,38 @@ const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 /// - WhatsApp cancela el clic en los enlaces para abrirlos con su propio código, que dentro de la
 ///   webview no hace nada. Nos adelantamos y los abrimos con `window.open`, que llega a
 ///   `on_new_window` y de ahí al navegador del sistema.
+/// - Añade un botón de Ajustes de Conversa a la barra lateral de WhatsApp, copiando el aspecto
+///   del botón "Contenido multimedia". Al pulsarlo navega a `conversa://settings`, que
+///   interceptamos en `on_navigation`. Si WhatsApp redibuja la barra, se vuelve a añadir.
 const INIT_SCRIPT: &str = r#"
 document.addEventListener("DOMContentLoaded", () => {
   const style = document.createElement("style");
   style.textContent = `#side > [role="button"]:has([data-icon="wa-square-icon"]) { display: none !important; }`;
   document.head.append(style);
+});
+const GEAR_SVG = '<svg viewBox="0 0 24 24" height="24" width="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
+function addSettingsButton() {
+  const media = document.querySelector('header[data-testid="chatlist-header"] button[data-navbar-item-index="4"]');
+  if (!media || document.getElementById("conversa-settings")) return;
+  let item = media;
+  while (item.parentElement && item.parentElement.children.length === 1) item = item.parentElement;
+  const clone = item.cloneNode(true);
+  clone.id = "conversa-settings";
+  const button = clone.querySelector("button");
+  button.setAttribute("aria-label", "Ajustes de Conversa");
+  button.title = "Ajustes de Conversa";
+  button.removeAttribute("data-navbar-item-index");
+  button.querySelector("svg").outerHTML = GEAR_SVG;
+  button.addEventListener("click", () => { location.href = "conversa://settings"; });
+  item.before(clone);
+}
+document.addEventListener("DOMContentLoaded", () => {
+  let scheduled = false;
+  new MutationObserver(() => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); });
+  }).observe(document.body, { childList: true, subtree: true });
 });
 window.addEventListener("click", (event) => {
   const link = event.target.closest?.("a[href]");
@@ -69,9 +96,7 @@ fn main() {
     tauri::Builder::default()
         // Debe registrarse el primero: si ya hay una instancia, mostramos su ventana y salimos.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
-                show_window(&window);
-            }
+            show_window(app)
         }))
         .plugin(tauri_plugin_opener::init())
         // Recuerda tamaño, posición y maximizado. La visibilidad la decidimos nosotros.
@@ -90,27 +115,27 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             settings::get_settings,
             settings::save_settings,
-            settings::check_updates
+            settings::check_updates,
+            settings::close_settings
         ])
         .on_window_event(|window, event| {
-            let Some(window) = window
-                .get_webview_window(window.label())
-                .filter(|window| window.label() == MAIN_WINDOW)
-            else {
+            if window.label() != MAIN_WINDOW {
                 return;
-            };
+            }
+            let app = window.app_handle();
             match event {
                 // Según el ajuste, cerrar la manda a la bandeja o sale de la app.
                 WindowEvent::CloseRequested { api, .. } => {
-                    if settings::get(window.app_handle()).close_to_tray {
+                    if settings::get(app).close_to_tray {
                         api.prevent_close();
-                        hide_window(&window);
+                        hide_window(app);
                     } else {
-                        window.app_handle().exit(0);
+                        app.exit(0);
                     }
                 }
                 WindowEvent::Resized(_) => {
-                    set_background(&window, window.is_minimized().unwrap_or(false));
+                    set_background(app, window.is_minimized().unwrap_or(false));
+                    settings::resize_panel(window);
                 }
                 _ => {}
             }
@@ -122,11 +147,12 @@ fn main() {
             let start_hidden = std::env::args().any(|arg| arg == MINIMIZED_ARG)
                 && settings::get(app.handle()).start_hidden;
             let window = build_main_window(app.handle(), !start_hidden)?;
+            let _ = window.set_zoom(settings::get(app.handle()).zoom);
             // En Linux WebKitGTK ya envía las notificaciones web al sistema.
             #[cfg(windows)]
             toast::attach(&window);
             if start_hidden {
-                set_background(&window, true);
+                set_background(app.handle(), true);
             }
             build_tray(app.handle())?;
 
@@ -181,12 +207,20 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
             open_external(&on_nav, url);
             false
         }
+        Target::AppSettings => {
+            open_settings(&on_nav);
+            false
+        }
         Target::Blocked => false,
     })
     .on_new_window(move |url, _features| match links::classify(&url) {
         Target::Internal => NewWindowResponse::Allow,
         Target::External => {
             open_external(&on_new, &url);
+            NewWindowResponse::Deny
+        }
+        Target::AppSettings => {
+            open_settings(&on_new);
             NewWindowResponse::Deny
         }
         Target::Blocked => NewWindowResponse::Deny,
@@ -240,11 +274,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "toggle" => toggle_window(app),
-            "settings" => {
-                if let Err(err) = settings::open_window(app) {
-                    eprintln!("no se pudo abrir los ajustes: {err}");
-                }
-            }
+            "settings" => open_settings(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -262,35 +292,52 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn show_window(window: &WebviewWindow) {
-    let _ = window.unminimize();
-    let _ = window.show();
-    let _ = window.set_focus();
-    set_background(window, false);
+/// Desde otro hilo, para que Tauri lo encole: creada dentro de un manejador de WebView2 (p. ej. la
+/// navegación a `conversa://settings`) la nueva webview se queda en blanco.
+fn open_settings(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(err) = settings::open_panel(&app) {
+            eprintln!("no se pudo abrir los ajustes: {err}");
+        }
+    });
 }
 
-fn hide_window(window: &WebviewWindow) {
-    let _ = window.hide();
-    set_background(window, true);
+// La ventana principal y su webview (WhatsApp) se buscan por separado: con el panel de Ajustes
+// abierto la ventana tiene dos webviews y `get_webview_window` deja de encontrarla.
+fn show_window(app: &AppHandle) {
+    if let Some(window) = app.get_window(MAIN_WINDOW) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    set_background(app, false);
+}
+
+fn hide_window(app: &AppHandle) {
+    if let Some(window) = app.get_window(MAIN_WINDOW) {
+        let _ = window.hide();
+    }
+    set_background(app, true);
 }
 
 fn toggle_window(app: &AppHandle) {
-    let Some(window) = app.get_webview_window(MAIN_WINDOW) else {
+    let Some(window) = app.get_window(MAIN_WINDOW) else {
         return;
     };
     let in_front = window.is_visible().unwrap_or(false) && !window.is_minimized().unwrap_or(false);
     if in_front {
-        hide_window(&window);
+        hide_window(app);
     } else {
-        show_window(&window);
+        show_window(app);
     }
 }
 
 /// Modo híbrido: oculta o minimizada, pedimos a WebView2 que libere toda la memoria posible,
 /// pero sin suspender la página, para que sigan llegando mensajes y notificaciones al momento.
-fn set_background(window: &WebviewWindow, background: bool) {
+fn set_background(app: &AppHandle, background: bool) {
     #[cfg(windows)]
-    {
+    if let Some(webview) = app.get_webview(MAIN_WINDOW) {
         use webview2_com::Microsoft::Web::WebView2::Win32::{
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL, ICoreWebView2_19,
@@ -302,7 +349,7 @@ fn set_background(window: &WebviewWindow, background: bool) {
         } else {
             COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
         };
-        let _ = window.with_webview(move |webview| unsafe {
+        let _ = webview.with_webview(move |webview| unsafe {
             if let Ok(core) = webview.controller().CoreWebView2()
                 && let Ok(core) = core.cast::<ICoreWebView2_19>()
             {
@@ -312,7 +359,7 @@ fn set_background(window: &WebviewWindow, background: bool) {
     }
     // ponytail: WebKitGTK no tiene un equivalente directo; en Linux no hacemos nada de momento.
     #[cfg(not(windows))]
-    let _ = (window, background);
+    let _ = (app, background);
 }
 
 /// WhatsApp Web pone los no leídos en el título: "(3) WhatsApp".

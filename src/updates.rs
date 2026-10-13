@@ -14,6 +14,10 @@ const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Comprueba al arrancar y cada 6 horas; según el ajuste avisa (una vez por versión) o instala.
 pub fn spawn_periodic_check(app: AppHandle) {
+    // Una compilación de desarrollo siempre es "antigua": se actualizaría a la publicada.
+    if cfg!(debug_assertions) {
+        return;
+    }
     std::thread::spawn(move || {
         let mut notified = String::new();
         loop {

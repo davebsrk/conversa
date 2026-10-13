@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri::{AppHandle, Manager, Webview, WebviewWindow};
 use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2_24, ICoreWebView2Notification};
 use webview2_com::{NotificationReceivedEventHandler, take_pwstr};
 use windows::Data::Xml::Dom::XmlDocument;
@@ -258,18 +258,15 @@ fn activated(app: &AppHandle, id: u64, title: String, reply: Option<String>) {
             let _ = notification.ReportClicked();
         }
     }
-    let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) else {
-        return;
-    };
-    match reply {
-        Some(text) => send_reply(window, title, text, REPLY_ATTEMPTS),
-        None => crate::show_window(&window),
+    match (reply, app.get_webview(crate::MAIN_WINDOW)) {
+        (Some(text), Some(webview)) => send_reply(webview, title, text, REPLY_ATTEMPTS),
+        _ => crate::show_window(app),
     }
 }
 
 /// Escribe y envía la respuesta en el chat abierto, pero solo si su cabecera coincide con el
 /// remitente de la notificación. Si no llega a abrirse, muestra la ventana para responder a mano.
-fn send_reply(window: WebviewWindow, title: String, text: String, attempts: u32) {
+fn send_reply(webview: Webview, title: String, text: String, attempts: u32) {
     let script = format!(
         r##"(() => {{
             const norm = s => s.replace(/[^\p{{L}}\p{{N}}]/gu, "").toLowerCase();
@@ -288,20 +285,20 @@ fn send_reply(window: WebviewWindow, title: String, text: String, attempts: u32)
         title = serde_json::to_string(&title).unwrap_or_default(),
         text = serde_json::to_string(&text).unwrap_or_default(),
     );
-    let retry = window.clone();
-    let _ = window.eval_with_callback(script, move |result| {
+    let retry = webview.clone();
+    let _ = webview.eval_with_callback(script, move |result| {
         if result.contains("sent") {
             return;
         }
         if attempts == 0 {
-            let window = retry.clone();
-            let _ = retry.run_on_main_thread(move || crate::show_window(&window));
+            let app = retry.app_handle().clone();
+            let _ = retry.run_on_main_thread(move || crate::show_window(&app));
             return;
         }
-        let (window, title, text) = (retry.clone(), title.clone(), text.clone());
+        let (webview, title, text) = (retry.clone(), title.clone(), text.clone());
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
-            send_reply(window, title, text, attempts - 1);
+            send_reply(webview, title, text, attempts - 1);
         });
     });
 }

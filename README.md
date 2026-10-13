@@ -25,7 +25,8 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
 - Cerrar la ventana la manda a la bandeja; se sale desde el menú de la bandeja.
 - Notificaciones nativas de Windows con la foto del contacto y **respuesta rápida** desde la propia
   notificación; al pulsarla se abre ese chat. En Linux, las notificaciones del sistema.
-- Ventana de **Ajustes** (desde la bandeja): iniciar con el sistema, cerrar a la bandeja o salir,
+- **Ajustes** integrados en la ventana (engranaje en la barra lateral de WhatsApp o desde la
+  bandeja): tamaño del texto (zoom), iniciar con el sistema, cerrar a la bandeja o salir,
   actualizaciones (avisar, instalar solas o no buscar), ocultar el texto de los mensajes y el atajo.
 - Atajo global <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd> para mostrar u ocultar la ventana.
 - Los enlaces se abren en tu navegador; las descargas van a tu carpeta Descargas.

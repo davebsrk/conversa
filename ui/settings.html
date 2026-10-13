@@ -7,17 +7,22 @@
 <style>
   :root {
     color-scheme: light dark;
-    --bg: #f3f3f3; --card: #ffffff; --line: #e5e5e5; --fg: #1b1b1b; --muted: #616161;
-    --accent: #059669; --accent-fg: #ffffff; --off: #8a8a8a; --error: #c42b1c;
+    --bg: #f7f5f3; --card: #ffffff; --line: #e9edef; --fg: #111b21; --muted: #667781;
+    --accent: #059669; --accent-fg: #ffffff; --off: #8a8a8a; --error: #c42b1c; --hover: rgba(0,0,0,.06);
   }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #202020; --card: #2b2b2b; --line: #3a3a3a; --fg: #ffffff; --muted: #c5c5c5;
-            --accent: #34d399; --accent-fg: #002619; --off: #9e9e9e; --error: #ff99a4; }
+    :root { --bg: #161717; --card: #1f2121; --line: #2e3131; --fg: #e9edef; --muted: #a5adb2;
+            --accent: #34d399; --accent-fg: #002619; --off: #9e9e9e; --error: #ff99a4; --hover: rgba(255,255,255,.08); }
   }
   * { box-sizing: border-box; margin: 0; }
   body { background: var(--bg); color: var(--fg); font: 14px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-         padding: 20px 16px 16px; user-select: none; }
-  h1 { font: 600 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; margin: 0 4px 16px; }
+         padding: 0 16px 16px; user-select: none; border-right: 1px solid var(--line); min-height: 100vh; }
+  header { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 12px;
+           background: var(--bg); margin: 0 -16px; padding: 14px 12px 10px; }
+  h1 { font: 600 20px/1.3 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif; }
+  #back { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%;
+          background: transparent; color: var(--fg); }
+  #back:hover { background: var(--hover); filter: none; }
   h2 { font-size: 14px; font-weight: 600; margin: 18px 4px 8px; }
   .group { background: var(--card); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
   .row { display: flex; align-items: center; gap: 16px; padding: 12px 16px; min-height: 56px; }
@@ -46,7 +51,12 @@
 </style>
 </head>
 <body>
-  <h1>Ajustes</h1>
+  <header>
+    <button id="back" type="button" aria-label="Volver" title="Volver (Esc)">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+    </button>
+    <h1>Ajustes de Conversa</h1>
+  </header>
 
   <h2>Inicio</h2>
   <div class="group">
@@ -58,6 +68,23 @@
       <div class="text">Empezar oculta en la bandeja<small>Al iniciar con el sistema, sin abrir la ventana.</small></div>
       <div class="switch"><input type="checkbox" id="startHidden"><span></span></div>
     </label>
+  </div>
+
+  <h2>Apariencia</h2>
+  <div class="group">
+    <div class="row">
+      <label class="text" for="zoom">Tamaño del texto<small>Agranda o reduce todo WhatsApp.</small></label>
+      <select id="zoom">
+        <option value="0.8">80 %</option>
+        <option value="0.9">90 %</option>
+        <option value="1">100 %</option>
+        <option value="1.1">110 %</option>
+        <option value="1.25">125 %</option>
+        <option value="1.5">150 %</option>
+        <option value="1.75">175 %</option>
+        <option value="2">200 %</option>
+      </select>
+    </div>
   </div>
 
   <h2>Ventana</h2>
@@ -113,6 +140,7 @@
     $("autostart").checked = autostart;
     for (const id of toggles) $(id).checked = settings[id];
     $("updates").value = settings.updates;
+    $("zoom").value = String(settings.zoom);
     $("version").textContent = version;
     syncStartHidden();
   }
@@ -121,6 +149,7 @@
     syncStartHidden();
     const settings = Object.fromEntries(toggles.map((id) => [id, $(id).checked]));
     settings.updates = $("updates").value;
+    settings.zoom = Number($("zoom").value);
     try {
       await invoke("save_settings", { settings, autostart: $("autostart").checked });
       status("Guardado");
@@ -135,6 +164,9 @@
     await invoke("check_updates");
     status("Buscando actualizaciones… te avisará una notificación.");
   });
+  const close = () => invoke("close_settings");
+  $("back").addEventListener("click", close);
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
   load().catch((err) => status(String(err), true));
 </script>
 </body>
