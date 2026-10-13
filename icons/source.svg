@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <!-- Icono provisional: dos bocadillos de conversación superpuestos. -->
-  <rect width="1024" height="1024" rx="224" fill="#1f6f5c"/>
-  <path d="M300 250h360a110 110 0 0 1 110 110v190a110 110 0 0 1-110 110H470l-130 110v-110h-40a110 110 0 0 1-110-110V360a110 110 0 0 1 110-110z" fill="#f4efe6"/>
-  <path d="M790 430v190a150 150 0 0 1-150 150H500l-40 34h210l130 106V794h20a100 100 0 0 0 100-100V530a100 100 0 0 0-130-100z" fill="#9fd8c4"/>
-  <circle cx="370" cy="455" r="40" fill="#1f6f5c"/>
-  <circle cx="480" cy="455" r="40" fill="#1f6f5c"/>
-  <circle cx="590" cy="455" r="40" fill="#1f6f5c"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Bocadillo con una esquina en pico (abajo a la izquierda) y una C dentro. Esmeralda. -->
+  <rect id="background" width="512" height="512" rx="112" fill="#059669"/>
+  <g id="icon">
+    <rect x="100" y="100" width="312" height="312" rx="124" fill="#ffffff"/>
+    <rect x="100" y="290" width="122" height="122" fill="#ffffff"/>
+    <path d="M308 204A74 74 0 1 0 308 308" fill="none" stroke="#059669" stroke-width="44" stroke-linecap="round"/>
+  </g>
 </svg>

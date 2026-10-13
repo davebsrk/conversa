@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Bocadillo con una esquina en pico (abajo a la izquierda) y una C dentro. Esmeralda. -->
+  <rect id="background" width="512" height="512" rx="112" fill="#059669"/>
+  <g id="icon">
+    <rect x="100" y="100" width="312" height="312" rx="124" fill="#ffffff"/>
+    <rect x="100" y="290" width="122" height="122" fill="#ffffff"/>
+    <path d="M308 204A74 74 0 1 0 308 308" fill="none" stroke="#059669" stroke-width="44" stroke-linecap="round"/>
+    <circle cx="410" cy="102" r="92" fill="#e5383b" stroke="#ffffff" stroke-width="28"/>
+  </g>
+</svg>

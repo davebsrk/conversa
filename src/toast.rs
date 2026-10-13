@@ -288,7 +288,8 @@ fn download_picture(app: &AppHandle, tag: &str, url: &str) -> Option<PathBuf> {
 
 fn app_icon_path(app: &AppHandle) -> tauri::Result<PathBuf> {
     let path = app.path().app_data_dir()?.join("icon.png");
-    if !path.exists() {
+    // Se reescribe si cambia (p. ej. tras una actualización con icono nuevo).
+    if std::fs::read(&path).ok().as_deref() != Some(APP_ICON) {
         std::fs::create_dir_all(path.parent().expect("tiene carpeta"))?;
         std::fs::write(&path, APP_ICON)?;
     }

@@ -3,3 +3,5 @@
 # Resultados de medición locales (dependen de la máquina)
 /bench/*.csv
 /target-bundle
+# Propuestas de icono (el elegido está en icons/source.svg)
+/logos
