@@ -28,14 +28,27 @@ const TOGGLE_SHORTCUT: &str = "CommandOrControl+Alt+W";
 /// Argumento con el que se lanza al iniciar sesión en el sistema: arranca oculta en la bandeja.
 const MINIMIZED_ARG: &str = "--minimized";
 const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
-/// Oculta el botón "Obtener WhatsApp para Windows" del pie de la lista de chats. Si WhatsApp
-/// cambia su HTML, el selector deja de coincidir y simplemente vuelve a verse.
-const HIDE_ELEMENTS_SCRIPT: &str = r#"
+/// Se inyecta en WhatsApp Web al cargar:
+/// - Oculta el botón "Obtener WhatsApp para Windows" del pie de la lista de chats. Si WhatsApp
+///   cambia su HTML, el selector deja de coincidir y simplemente vuelve a verse.
+/// - WhatsApp cancela el clic en los enlaces para abrirlos con su propio código, que dentro de la
+///   webview no hace nada. Nos adelantamos y los abrimos con `window.open`, que llega a
+///   `on_new_window` y de ahí al navegador del sistema.
+const INIT_SCRIPT: &str = r#"
 document.addEventListener("DOMContentLoaded", () => {
   const style = document.createElement("style");
   style.textContent = `#side > [role="button"]:has([data-icon="wa-square-icon"]) { display: none !important; }`;
   document.head.append(style);
 });
+window.addEventListener("click", (event) => {
+  const link = event.target.closest?.("a[href]");
+  if (!link || event.button !== 0) return;
+  const url = new URL(link.href, location.href);
+  if (!/^https?:$/.test(url.protocol) || url.host === location.host) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  window.open(url.href, "_blank", "noopener");
+}, true);
 "#;
 
 /// WhatsApp Web rechaza WebKitGTK como "navegador no soportado", así que en Linux nos
@@ -130,7 +143,7 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
     .min_inner_size(400.0, 500.0)
     .visible(visible)
     .data_directory(profile_dir)
-    .initialization_script(HIDE_ELEMENTS_SCRIPT)
+    .initialization_script(INIT_SCRIPT)
     .on_navigation(move |url| match links::classify(url) {
         Target::Internal => true,
         Target::External => {
