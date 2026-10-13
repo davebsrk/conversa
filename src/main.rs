@@ -40,7 +40,8 @@ const TRAY_BASE_ICON: &[u8] = include_bytes!("../icons/64x64.png");
 #[cfg(not(windows))]
 const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 /// Se inyecta en WhatsApp Web al cargar:
-/// - Aplica el CSS de los ajustes (modo privacidad, aspecto) guardado en `localStorage`.
+/// - Aplica el aspecto de los ajustes (privacidad, ancho de la lista, elementos ocultos) guardado
+///   en `localStorage`.
 /// - Oculta el botón "Obtener WhatsApp para Windows" del pie de la lista de chats. Si WhatsApp
 ///   cambia su HTML, el selector deja de coincidir y simplemente vuelve a verse.
 /// - WhatsApp cancela el clic en los enlaces para abrirlos con su propio código, que dentro de la
@@ -50,22 +51,45 @@ const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 ///   del botón "Contenido multimedia". Al pulsarlo navega a `conversa://settings`, que
 ///   interceptamos en `on_navigation`. Si WhatsApp redibuja la barra, se vuelve a añadir.
 const INIT_SCRIPT: &str = r#"
-// CSS de los ajustes (privacidad, aspecto): Rust lo actualiza con conversaApplyCss y se guarda en
-// localStorage para aplicarlo aquí, antes de que se pinte nada, en cada carga de la página.
-window.conversaApplyCss = (css) => {
-  try { localStorage.setItem("conversa-css", css); } catch {}
+// Aspecto según los ajustes (privacidad, ancho de la lista, elementos ocultos). Rust lo envía con
+// conversaApplyAppearance y se guarda en localStorage para aplicarlo aquí, antes de que se pinte
+// nada, en cada carga de la página.
+let conversaHidden = [];
+window.conversaApplyAppearance = (appearance) => {
+  try { localStorage.setItem("conversa-appearance", JSON.stringify(appearance)); } catch {}
   let style = document.getElementById("conversa-css");
   if (!style) {
     style = document.createElement("style");
     style.id = "conversa-css";
     (document.head ?? document.documentElement).append(style);
   }
-  style.textContent = css;
+  style.textContent = appearance.css;
+  conversaHidden = appearance.hide;
+  hideItems();
 };
-(function applySavedCss() {
-  if (!document.documentElement) return requestAnimationFrame(applySavedCss);
-  try { const css = localStorage.getItem("conversa-css"); if (css) window.conversaApplyCss(css); } catch {}
+(function applySavedAppearance() {
+  if (!document.documentElement) return requestAnimationFrame(applySavedAppearance);
+  try {
+    localStorage.removeItem("conversa-css"); // formato de la 0.1.6
+    const saved = JSON.parse(localStorage.getItem("conversa-appearance"));
+    if (saved) window.conversaApplyAppearance(saved);
+  } catch {}
 })();
+// Oculta botones de la barra lateral (por el título de su icono, que no depende del idioma) y la
+// barra de filtros de la lista de chats. Se repite cada vez que WhatsApp redibuja.
+function outermost(el, isSingle) {
+  while (el?.parentElement && isSingle(el.parentElement)) el = el.parentElement;
+  return el;
+}
+function hideItems() {
+  const rail = document.querySelector('header[data-testid="chatlist-header"]');
+  for (const title of rail?.querySelectorAll("button[data-navbar-item] svg title") ?? []) {
+    const item = outermost(title.closest("button"), (p) => p.querySelectorAll("button[data-navbar-item]").length === 1);
+    item.style.display = conversaHidden.includes(title.textContent) ? "none" : "";
+  }
+  const filters = document.querySelector('#side [role="tablist"][aria-label="chat-list-filters"]');
+  if (filters) outermost(filters, (p) => p.children.length === 1).style.display = conversaHidden.includes("filters") ? "none" : "";
+}
 document.addEventListener("DOMContentLoaded", () => {
   const style = document.createElement("style");
   style.textContent = `#side > [role="button"]:has([data-icon="wa-square-icon"]) { display: none !important; }`;
@@ -92,7 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
   new MutationObserver(() => {
     if (scheduled) return;
     scheduled = true;
-    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); });
+    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); });
   }).observe(document.body, { childList: true, subtree: true });
 });
 window.addEventListener("click", (event) => {

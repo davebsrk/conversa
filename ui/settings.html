@@ -85,6 +85,30 @@
         <option value="2">200 %</option>
       </select>
     </div>
+    <div class="row">
+      <label class="text" for="listWidth">Ancho de la lista de chats</label>
+      <select id="listWidth">
+        <option value="auto">Automático</option>
+        <option value="narrow">Estrecha</option>
+        <option value="wide">Ancha</option>
+      </select>
+    </div>
+    <label class="row">
+      <div class="text">Ocultar la barra de filtros<small>Todos, No leídos, Favoritos, Grupos…</small></div>
+      <div class="switch"><input type="checkbox" id="hideFilters"><span></span></div>
+    </label>
+    <label class="row">
+      <div class="text">Ocultar Estados</div>
+      <div class="switch"><input type="checkbox" id="hideStatus"><span></span></div>
+    </label>
+    <label class="row">
+      <div class="text">Ocultar Canales</div>
+      <div class="switch"><input type="checkbox" id="hideChannels"><span></span></div>
+    </label>
+    <label class="row">
+      <div class="text">Ocultar Comunidades</div>
+      <div class="switch"><input type="checkbox" id="hideCommunities"><span></span></div>
+    </label>
   </div>
 
   <h2>Privacidad</h2>
@@ -136,7 +160,7 @@
 <script>
   const invoke = window.__TAURI_INTERNALS__.invoke;
   const $ = (id) => document.getElementById(id);
-  const toggles = ["startHidden", "closeToTray", "globalShortcut", "messagePreview", "privacyBlur"];
+  const toggles = ["startHidden", "closeToTray", "globalShortcut", "messagePreview", "privacyBlur", "hideFilters", "hideStatus", "hideChannels", "hideCommunities"];
   const status = (text, error = false) => { $("status").textContent = text; $("status").className = error ? "error" : ""; };
 
   function syncStartHidden() {
@@ -149,6 +173,7 @@
     for (const id of toggles) $(id).checked = settings[id];
     $("updates").value = settings.updates;
     $("zoom").value = String(settings.zoom);
+    $("listWidth").value = settings.listWidth;
     $("version").textContent = version;
     syncStartHidden();
   }
@@ -158,6 +183,7 @@
     const settings = Object.fromEntries(toggles.map((id) => [id, $(id).checked]));
     settings.updates = $("updates").value;
     settings.zoom = Number($("zoom").value);
+    settings.listWidth = $("listWidth").value;
     try {
       await invoke("save_settings", { settings, autostart: $("autostart").checked });
       status("Guardado");

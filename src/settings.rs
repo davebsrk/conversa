@@ -29,6 +29,22 @@ pub struct Settings {
     pub zoom: f64,
     /// Desenfocar la lista de chats y los mensajes hasta pasar el ratón por encima.
     pub privacy_blur: bool,
+    pub list_width: ListWidth,
+    /// Ocultar la barra de filtros (Todos, No leídos, Favoritos...) de la lista de chats.
+    pub hide_filters: bool,
+    pub hide_status: bool,
+    pub hide_channels: bool,
+    pub hide_communities: bool,
+}
+
+/// Ancho de la columna de la lista de chats.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ListWidth {
+    /// El de WhatsApp.
+    Auto,
+    Narrow,
+    Wide,
 }
 
 impl Default for Settings {
@@ -41,6 +57,11 @@ impl Default for Settings {
             global_shortcut: true,
             zoom: 1.0,
             privacy_blur: false,
+            list_width: ListWidth::Auto,
+            hide_filters: false,
+            hide_status: false,
+            hide_channels: false,
+            hide_communities: false,
         }
     }
 }
@@ -125,9 +146,43 @@ pub fn close_settings(app: AppHandle) {
     }
 }
 
-/// CSS que Conversa añade a WhatsApp Web según los ajustes.
-pub fn appearance_css(settings: &Settings) -> String {
+/// Lo que Conversa cambia en el aspecto de WhatsApp Web: CSS y elementos que ocultar (botones de
+/// la barra lateral por el título de su icono, y `filters` para la barra de filtros).
+#[derive(Serialize)]
+pub struct Appearance {
+    css: String,
+    hide: Vec<&'static str>,
+}
+
+pub fn appearance(settings: &Settings) -> Appearance {
+    let hide = [
+        (settings.hide_filters, "filters"),
+        (settings.hide_status, "wds-ic-status"),
+        (settings.hide_channels, "wds-ic-channels"),
+        (settings.hide_communities, "wds-ic-communities"),
+    ]
+    .into_iter()
+    .filter_map(|(on, item)| on.then_some(item))
+    .collect();
+    Appearance {
+        css: appearance_css(settings),
+        hide,
+    }
+}
+
+fn appearance_css(settings: &Settings) -> String {
     let mut css = String::new();
+    // La columna de la lista de chats es el padre de #side (WhatsApp le da un 30-40 %).
+    let width = match settings.list_width {
+        ListWidth::Auto => None,
+        ListWidth::Narrow => Some("28%"),
+        ListWidth::Wide => Some("50%"),
+    };
+    if let Some(width) = width {
+        css.push_str(&format!(
+            "div:has(> #side) {{ flex: 0 0 {width} !important; max-width: {width} !important; min-width: 280px; }}\n"
+        ));
+    }
     if settings.privacy_blur {
         // Lista de chats, mensajes y cabecera del chat; se ven nítidos al pasar el ratón.
         css.push_str(
@@ -140,12 +195,12 @@ pub fn appearance_css(settings: &Settings) -> String {
     css
 }
 
-/// Aplica el CSS de los ajustes a WhatsApp Web. También lo guarda en su `localStorage`, de donde
-/// lo lee el script inicial al recargar: así se aplica desde el primer instante, sin parpadeo.
+/// Aplica el aspecto de los ajustes a WhatsApp Web. También lo guarda en su `localStorage`, de
+/// donde lo lee el script inicial al recargar: así se aplica desde el primer instante, sin parpadeo.
 pub fn apply_appearance(app: &AppHandle, settings: &Settings) {
     if let Some(webview) = app.get_webview(crate::MAIN_WINDOW) {
-        let css = serde_json::to_string(&appearance_css(settings)).expect("JSON");
-        let _ = webview.eval(format!("window.conversaApplyCss({css})"));
+        let appearance = serde_json::to_string(&appearance(settings)).expect("JSON");
+        let _ = webview.eval(format!("window.conversaApplyAppearance({appearance})"));
     }
 }
 
@@ -209,6 +264,7 @@ mod tests {
         assert!(settings.updates == UpdateMode::Notify);
         assert_eq!(settings.zoom, 1.0);
         assert!(!settings.privacy_blur);
+        assert!(settings.list_width == ListWidth::Auto);
     }
 
     #[test]
@@ -219,6 +275,25 @@ mod tests {
         let css = appearance_css(&settings);
         assert!(css.contains("#pane-side [role=\"row\"]") && css.contains("blur(7px)"));
         assert!(css.contains(":hover"));
+    }
+
+    #[test]
+    fn list_width_and_hidden_items() {
+        let mut settings = Settings::default();
+        let plain = appearance(&settings);
+        assert!(plain.css.is_empty() && plain.hide.is_empty());
+        settings.list_width = ListWidth::Wide;
+        settings.hide_filters = true;
+        settings.hide_channels = true;
+        let custom = appearance(&settings);
+        assert!(
+            custom
+                .css
+                .contains("div:has(> #side) { flex: 0 0 50% !important")
+        );
+        assert_eq!(custom.hide, ["filters", "wds-ic-channels"]);
+        let parsed: Settings = serde_json::from_str(r#"{"listWidth": "narrow"}"#).unwrap();
+        assert!(parsed.list_width == ListWidth::Narrow);
     }
 
     #[test]
