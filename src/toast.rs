@@ -164,7 +164,11 @@ impl Toast {
                 {audio}
             </toast>"#,
             title = xml_escape(&self.title),
-            body = xml_escape(&self.body),
+            body = if crate::settings::get(app).message_preview {
+                xml_escape(&self.body)
+            } else {
+                "Nuevo mensaje".into()
+            },
         );
         // Un toast por chat: el siguiente mensaje sustituye al anterior.
         let tag = (!self.tag.is_empty()).then(|| short_hash(&self.tag));

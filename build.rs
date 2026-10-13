@@ -1,3 +1,12 @@
 fn main() {
-    tauri_build::build()
+    // Declarar los comandos propios los somete a los permisos de `capabilities/`: solo la ventana
+    // de Ajustes puede llamarlos, nunca la página de WhatsApp Web.
+    tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&[
+            "get_settings",
+            "save_settings",
+            "check_updates",
+        ]),
+    ))
+    .expect("error en tauri-build");
 }

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod links;
+mod settings;
 #[cfg(windows)]
 mod toast;
 mod updates;
@@ -9,13 +10,12 @@ mod updates;
 use std::path::PathBuf;
 
 use tauri::image::Image;
-use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PermissionKind, PermissionResponse};
 use tauri::{
     AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
-use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_window_state::StateFlags;
@@ -80,25 +80,40 @@ fn main() {
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .on_window_event(|window, event| match event {
-            // Cerrar la ventana la manda a la bandeja; se sale desde el menú de la bandeja.
-            WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                if let Some(window) = window.get_webview_window(MAIN_WINDOW) {
-                    hide_window(&window);
+        .invoke_handler(tauri::generate_handler![
+            settings::get_settings,
+            settings::save_settings,
+            settings::check_updates
+        ])
+        .on_window_event(|window, event| {
+            let Some(window) = window
+                .get_webview_window(window.label())
+                .filter(|window| window.label() == MAIN_WINDOW)
+            else {
+                return;
+            };
+            match event {
+                // Según el ajuste, cerrar la manda a la bandeja o sale de la app.
+                WindowEvent::CloseRequested { api, .. } => {
+                    if settings::get(window.app_handle()).close_to_tray {
+                        api.prevent_close();
+                        hide_window(&window);
+                    } else {
+                        window.app_handle().exit(0);
+                    }
                 }
-            }
-            WindowEvent::Resized(_) => {
-                if let Some(window) = window.get_webview_window(MAIN_WINDOW) {
+                WindowEvent::Resized(_) => {
                     set_background(&window, window.is_minimized().unwrap_or(false));
                 }
+                _ => {}
             }
-            _ => {}
         })
         .setup(|app| {
+            settings::init(app.handle());
             #[cfg(windows)]
             toast::register(app.handle())?;
-            let start_hidden = std::env::args().any(|arg| arg == MINIMIZED_ARG);
+            let start_hidden = std::env::args().any(|arg| arg == MINIMIZED_ARG)
+                && settings::get(app.handle()).start_hidden;
             let window = build_main_window(app.handle(), !start_hidden)?;
             // En Linux WebKitGTK ya envía las notificaciones web al sistema.
             #[cfg(windows)]
@@ -108,17 +123,7 @@ fn main() {
             }
             build_tray(app.handle())?;
 
-            if let Err(err) =
-                app.global_shortcut()
-                    .on_shortcut(TOGGLE_SHORTCUT, |app, _shortcut, event| {
-                        if event.state == ShortcutState::Pressed {
-                            toggle_window(app);
-                        }
-                    })
-            {
-                // Otra app puede tener ya el atajo: no es motivo para no arrancar.
-                eprintln!("no se pudo registrar el atajo {TOGGLE_SHORTCUT}: {err}");
-            }
+            set_global_shortcut(app.handle(), settings::get(app.handle()).global_shortcut);
 
             updates::spawn_periodic_check(app.handle().clone());
             Ok(())
@@ -127,9 +132,28 @@ fn main() {
         .expect("error al iniciar Conversa");
 }
 
+/// Un directorio de datos por cuenta: deja preparada la multicuenta.
+fn profile_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
+    Ok(app.path().app_data_dir()?.join("profiles").join("default"))
+}
+
+fn set_global_shortcut(app: &AppHandle, enabled: bool) {
+    let shortcuts = app.global_shortcut();
+    let _ = shortcuts.unregister(TOGGLE_SHORTCUT);
+    if !enabled {
+        return;
+    }
+    if let Err(err) = shortcuts.on_shortcut(TOGGLE_SHORTCUT, |app, _shortcut, event| {
+        if event.state == ShortcutState::Pressed {
+            toggle_window(app);
+        }
+    }) {
+        // Otra app puede tener ya el atajo: no es motivo para no arrancar.
+        eprintln!("no se pudo registrar el atajo {TOGGLE_SHORTCUT}: {err}");
+    }
+}
+
 fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWindow> {
-    // Un directorio de datos por cuenta: deja preparada la multicuenta.
-    let profile_dir = app.path().app_data_dir()?.join("profiles").join("default");
     let on_nav = app.clone();
     let on_new = app.clone();
 
@@ -142,7 +166,7 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
     .inner_size(1100.0, 750.0)
     .min_inner_size(400.0, 500.0)
     .visible(visible)
-    .data_directory(profile_dir)
+    .data_directory(profile_dir(app)?)
     .initialization_script(INIT_SCRIPT)
     .on_navigation(move |url| match links::classify(url) {
         Target::Internal => true,
@@ -189,20 +213,11 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
     let menu = Menu::with_items(
         app,
         &[
             &MenuItem::with_id(app, "toggle", "Mostrar / ocultar", true, None::<&str>)?,
-            &CheckMenuItem::with_id(
-                app,
-                "autostart",
-                "Iniciar con el sistema",
-                true,
-                autostart_enabled,
-                None::<&str>,
-            )?,
-            &MenuItem::with_id(app, "updates", "Buscar actualizaciones", true, None::<&str>)?,
+            &MenuItem::with_id(app, "settings", "Ajustes", true, None::<&str>)?,
             &MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?,
         ],
     )?;
@@ -218,18 +233,11 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "toggle" => toggle_window(app),
-            "autostart" => {
-                let autolaunch = app.autolaunch();
-                let result = if autolaunch.is_enabled().unwrap_or(false) {
-                    autolaunch.disable()
-                } else {
-                    autolaunch.enable()
-                };
-                if let Err(err) = result {
-                    eprintln!("no se pudo cambiar el inicio automático: {err}");
+            "settings" => {
+                if let Err(err) = settings::open_window(app) {
+                    eprintln!("no se pudo abrir los ajustes: {err}");
                 }
             }
-            "updates" => updates::check_now(app.clone()),
             "quit" => app.exit(0),
             _ => {}
         })

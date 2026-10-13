@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "La ventana de Ajustes puede leer y guardar los ajustes y buscar actualizaciones.",
+  "windows": ["settings"],
+  "permissions": ["allow-get-settings", "allow-save-settings", "allow-check-updates"]
+}

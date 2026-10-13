@@ -1,24 +1,32 @@
 //! Busca versiones nuevas en GitHub Releases. Si hay una, avisa con una notificación y solo se
-//! instala cuando el usuario lo pide (botón de la notificación o "Buscar actualizaciones").
+//! instala cuando el usuario lo pide (botón de la notificación o "Buscar actualizaciones"), salvo
+//! que en Ajustes se haya elegido instalarlas automáticamente.
 
 use std::time::Duration;
 
 use tauri::AppHandle;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
+use crate::settings::{self, UpdateMode};
+
 /// La app pasa días en la bandeja: no basta con comprobar al arrancar.
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
-/// Comprueba al arrancar y cada 6 horas; avisa una sola vez por versión.
+/// Comprueba al arrancar y cada 6 horas; según el ajuste avisa (una vez por versión) o instala.
 pub fn spawn_periodic_check(app: AppHandle) {
     std::thread::spawn(move || {
         let mut notified = String::new();
         loop {
-            if let Ok(Some(update)) = check(&app)
+            let mode = settings::get(&app).updates;
+            if mode != UpdateMode::Off
+                && let Ok(Some(update)) = check(&app)
                 && update.version != notified
             {
                 notified = update.version.clone();
-                announce(&app, update);
+                match mode {
+                    UpdateMode::Auto => install(&app, update),
+                    _ => announce(&app, update),
+                }
             }
             std::thread::sleep(CHECK_EVERY);
         }
