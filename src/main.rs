@@ -49,8 +49,10 @@ const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 ///   webview no hace nada. Nos adelantamos y los abrimos con `window.open`, que llega a
 ///   `on_new_window` y de ahí al navegador del sistema.
 /// - Añade un botón de Ajustes de Conversa a la barra lateral de WhatsApp, copiando el aspecto
-///   del botón "Contenido multimedia". Al pulsarlo navega a `conversa://settings`, que
-///   interceptamos en `on_navigation`. Si WhatsApp redibuja la barra, se vuelve a añadir.
+///   del botón "Contenido multimedia". Al pulsarlo abre `conversa://settings` con `window.open`,
+///   que interceptamos en `on_new_window`. No se navega la página: con mensajes pendientes de
+///   enviar, WhatsApp mostraría "¿Abandonar sitio?" y quedaría bloqueado hasta responder.
+///   Si WhatsApp redibuja la barra, se vuelve a añadir.
 const INIT_SCRIPT: &str = r##"
 const ACCOUNT_COLORS = ["#059669", "#2563eb", "#d97706", "#db2777", "#7c3aed", "#0891b2"];
 const GEAR_SVG = '<svg viewBox="0 0 24 24" height="24" width="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -117,7 +119,7 @@ function renderAccounts() {
       dot.style.cssText = "position:absolute;top:-2px;right:-2px;width:11px;height:11px;border-radius:50%;background:#e5383b;border:2px solid #fff;";
       button.append(dot);
     }
-    button.addEventListener("click", () => { if (!account.current) location.href = "conversa://account/" + account.id; });
+    button.addEventListener("click", () => { if (!account.current) window.open("conversa://account/" + account.id); });
     box.append(button);
   });
   if (floating) {
@@ -127,7 +129,7 @@ function renderAccounts() {
     settings.setAttribute("aria-label", settings.title);
     settings.innerHTML = GEAR_SVG;
     settings.style.cssText = "width:32px;height:32px;border:0;border-radius:50%;padding:4px;cursor:pointer;color:#fff;background:transparent;";
-    settings.addEventListener("click", () => { location.href = "conversa://settings"; });
+    settings.addEventListener("click", () => { window.open("conversa://settings"); });
     box.append(settings);
     document.body.append(box);
   } else {
@@ -179,7 +181,7 @@ function addSettingsButton() {
   button.title = "Ajustes de Conversa";
   button.removeAttribute("data-navbar-item-index");
   button.querySelector("svg").outerHTML = GEAR_SVG;
-  button.addEventListener("click", () => { location.href = "conversa://settings"; });
+  button.addEventListener("click", () => { window.open("conversa://settings"); });
   item.before(clone);
 }
 document.addEventListener("DOMContentLoaded", () => {

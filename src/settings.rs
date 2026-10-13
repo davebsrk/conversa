@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
@@ -142,13 +143,47 @@ pub fn open_panel(app: &AppHandle) -> tauri::Result<()> {
     };
     crate::show_window(app);
     if let Some(panel) = app.get_webview(SETTINGS_PANEL) {
-        return panel.set_focus();
+        // Abierto o cerrándose: vuelve a su sitio (la animación nueva sustituye a la de cierre).
+        let from = panel.position().map(|position| position.x).unwrap_or(0);
+        let generation = PANEL_ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
+        std::thread::spawn(move || slide(&panel, from, 0, false, generation));
+        return Ok(());
     }
-    let (position, size) = panel_bounds(&window)?;
+    let (_, size) = panel_bounds(&window)?;
     let builder = WebviewBuilder::new(SETTINGS_PANEL, WebviewUrl::App("settings.html".into()))
         // Mismo perfil que WhatsApp: comparte sus procesos de WebView2 y no gasta más.
         .data_directory(crate::accounts::profile_dir(app, &get(app).active_account)?);
-    window.add_child(builder, position, size)?.set_focus()
+    // Entra deslizándose desde la izquierda.
+    let hidden = -(size.width as i32);
+    let panel = window.add_child(builder, PhysicalPosition::new(hidden, 0), size)?;
+    panel.set_focus()?;
+    let generation = PANEL_ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || slide(&panel, hidden, 0, false, generation));
+    Ok(())
+}
+
+/// Cada animación del panel tiene un número; si empieza otra, la anterior se detiene.
+static PANEL_ANIMATION: AtomicU64 = AtomicU64::new(0);
+
+/// Desliza el panel en horizontal de `from` a `to` (en ~160 ms, frenando al final) y, si se pide,
+/// lo cierra al terminar. Cada webview es una ventana nativa: se mueve la ventana entera.
+fn slide(panel: &Webview, from: i32, to: i32, close: bool, generation: u64) {
+    const STEPS: i32 = 10;
+    for step in 1..=STEPS {
+        if PANEL_ANIMATION.load(Ordering::SeqCst) != generation {
+            return;
+        }
+        let t = f64::from(step) / f64::from(STEPS);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let x = from + (f64::from(to - from) * eased).round() as i32;
+        if panel.set_position(PhysicalPosition::new(x, 0)).is_err() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(16));
+    }
+    if close && PANEL_ANIMATION.load(Ordering::SeqCst) == generation {
+        let _ = panel.close();
+    }
 }
 
 /// El panel ocupa toda la altura y hasta `PANEL_WIDTH` de ancho; se llama al redimensionar.
@@ -172,9 +207,14 @@ fn panel_bounds(window: &Window) -> tauri::Result<(PhysicalPosition<i32>, Physic
 
 #[tauri::command]
 pub fn close_settings(app: AppHandle) {
-    if let Some(panel) = app.get_webview(SETTINGS_PANEL) {
-        let _ = panel.close();
-    }
+    let Some(panel) = app.get_webview(SETTINGS_PANEL) else {
+        return;
+    };
+    // Sale deslizándose hacia la izquierda y se cierra.
+    let width = panel.size().map(|size| size.width as i32).unwrap_or(0);
+    let from = panel.position().map(|position| position.x).unwrap_or(0);
+    let generation = PANEL_ANIMATION.fetch_add(1, Ordering::SeqCst) + 1;
+    std::thread::spawn(move || slide(&panel, from, -width, true, generation));
 }
 
 /// Lo que Conversa cambia en el aspecto de WhatsApp Web: CSS y elementos que ocultar (botones de
