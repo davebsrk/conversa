@@ -1,6 +1,8 @@
 // En release no abrimos una consola junto a la ventana en Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(windows)]
+mod badge;
 mod links;
 mod settings;
 #[cfg(windows)]
@@ -28,6 +30,11 @@ const TRAY: &str = "main";
 const TOGGLE_SHORTCUT: &str = "CommandOrControl+Alt+W";
 /// Argumento con el que se lanza al iniciar sesión en el sistema: arranca oculta en la bandeja.
 const MINIMIZED_ARG: &str = "--minimized";
+/// Base del icono de la bandeja con el número de chats sin leer encima.
+#[cfg(windows)]
+const TRAY_BASE_ICON: &[u8] = include_bytes!("../icons/64x64.png");
+/// En Linux la bandeja muestra un punto rojo y el número va en el lanzador (`set_badge_count`).
+#[cfg(not(windows))]
 const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 /// Se inyecta en WhatsApp Web al cargar:
 /// - Oculta el botón "Obtener WhatsApp para Windows" del pie de la lista de chats. Si WhatsApp
@@ -317,6 +324,7 @@ fn unread_count(title: &str) -> u32 {
         .unwrap_or(0)
 }
 
+/// `count` es el número de chats sin leer que WhatsApp Web pone en su título (sin los silenciados).
 fn set_unread(window: &WebviewWindow, count: u32) {
     let label = match count {
         0 => "Conversa".to_string(),
@@ -325,32 +333,31 @@ fn set_unread(window: &WebviewWindow, count: u32) {
     let _ = window.set_title(&label);
 
     if let Some(tray) = window.app_handle().tray_by_id(TRAY) {
-        let icon = match count {
-            0 => window.app_handle().default_window_icon().cloned(),
-            _ => Image::from_bytes(TRAY_UNREAD_ICON).ok(),
-        };
-        let _ = tray.set_icon(icon);
+        let _ = tray.set_icon(tray_icon(window.app_handle(), count));
         let _ = tray.set_tooltip(Some(&label));
     }
 
     #[cfg(windows)]
-    let _ = window.set_overlay_icon((count > 0).then(red_dot));
+    let _ = window
+        .set_overlay_icon((count > 0).then(|| Image::new_owned(badge::render(count, 32), 32, 32)));
     #[cfg(not(windows))]
     let _ = window.set_badge_count((count > 0).then_some(i64::from(count)));
 }
 
-/// Punto rojo de 16×16 para el icono superpuesto de la barra de tareas de Windows.
-#[cfg(windows)]
-fn red_dot() -> Image<'static> {
-    const SIZE: u32 = 16;
-    let rgba = (0..SIZE * SIZE)
-        .flat_map(|i| {
-            let (x, y) = ((i % SIZE) as f32 - 7.5, (i / SIZE) as f32 - 7.5);
-            let alpha = if x * x + y * y <= 56.0 { 255 } else { 0 };
-            [0xe5, 0x38, 0x3b, alpha]
-        })
-        .collect();
-    Image::new_owned(rgba, SIZE, SIZE)
+fn tray_icon(app: &AppHandle, count: u32) -> Option<Image<'static>> {
+    if count == 0 {
+        return app.default_window_icon().cloned().map(Image::to_owned);
+    }
+    #[cfg(windows)]
+    {
+        const SIZE: u32 = 64;
+        const BADGE: u32 = 40;
+        let mut rgba = Image::from_bytes(TRAY_BASE_ICON).ok()?.rgba().to_vec();
+        badge::overlay(&mut rgba, SIZE, &badge::render(count, BADGE), BADGE);
+        Some(Image::new_owned(rgba, SIZE, SIZE))
+    }
+    #[cfg(not(windows))]
+    Image::from_bytes(TRAY_UNREAD_ICON).ok()
 }
 
 /// Desde otro hilo: lanzado desde el hilo de WebView2, ShellExecute devuelve OK pero en Windows

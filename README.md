@@ -20,7 +20,8 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
 ## Funciones
 
 - Todo lo que ofrece WhatsApp Web: chats, grupos, multimedia, notas de voz, estados, encuestas…
-- Icono en la bandeja con aviso de mensajes no leídos (y contador en el título de la ventana).
+- Número de chats sin leer (sin contar los silenciados) en el icono de la barra de tareas y de la
+  bandeja, como en la app oficial.
 - Cerrar la ventana la manda a la bandeja; se sale desde el menú de la bandeja.
 - Notificaciones nativas de Windows con la foto del contacto y **respuesta rápida** desde la propia
   notificación; al pulsarla se abre ese chat. En Linux, las notificaciones del sistema.
