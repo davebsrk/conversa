@@ -30,6 +30,8 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
   actualizaciones (avisar, instalar solas o no buscar), ocultar el texto de los mensajes y el atajo.
 - Atajo global <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd> para mostrar u ocultar la ventana.
 - Los enlaces se abren en tu navegador; las descargas van a tu carpeta Descargas.
+- Los enlaces de WhatsApp (`wa.me`, `whatsapp://`, invitaciones a grupos) se abren en Conversa,
+  tanto desde el navegador como desde un chat.
 - Sin el aviso "Obtener WhatsApp para Windows".
 - Recuerda el tamaño y la posición de la ventana.
 - Avisa cuando hay una versión nueva y se actualiza con un clic (o sola, si lo eliges en Ajustes).

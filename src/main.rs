@@ -18,6 +18,7 @@ use tauri::webview::{DownloadEvent, NewWindowResponse, PermissionKind, Permissio
 use tauri::{
     AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_window_state::StateFlags;
@@ -98,6 +99,9 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app)
         }))
+        // Enlaces whatsapp:// del sistema; con la feature "deep-link" de single-instance también
+        // llegan los que se abren con Conversa ya en marcha.
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         // Recuerda tamaño, posición y maximizado. La visibilidad la decidimos nosotros.
         .plugin(
@@ -159,6 +163,20 @@ fn main() {
             set_global_shortcut(app.handle(), settings::get(app.handle()).global_shortcut);
 
             updates::spawn_periodic_check(app.handle().clone());
+
+            let deep_link = app.deep_link();
+            // El instalador ya registra whatsapp://; esto cubre la versión portable. En desarrollo no,
+            // para no robarle el registro a la Conversa instalada.
+            if !cfg!(debug_assertions)
+                && let Err(err) = deep_link.register_all()
+            {
+                eprintln!("no se pudo registrar whatsapp://: {err}");
+            }
+            let handle = app.handle().clone();
+            deep_link.on_open_url(move |event| open_whatsapp_links(&handle, event.urls()));
+            if let Ok(Some(urls)) = deep_link.get_current() {
+                open_whatsapp_links(app.handle(), urls);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -207,6 +225,10 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
             open_external(&on_nav, url);
             false
         }
+        Target::Chat(web) => {
+            open_chat(&on_nav, web);
+            false
+        }
         Target::AppSettings => {
             open_settings(&on_nav);
             false
@@ -217,6 +239,10 @@ fn build_main_window(app: &AppHandle, visible: bool) -> tauri::Result<WebviewWin
         Target::Internal => NewWindowResponse::Allow,
         Target::External => {
             open_external(&on_new, &url);
+            NewWindowResponse::Deny
+        }
+        Target::Chat(web) => {
+            open_chat(&on_new, web);
             NewWindowResponse::Deny
         }
         Target::AppSettings => {
@@ -290,6 +316,24 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
     Ok(())
+}
+
+fn open_whatsapp_links(app: &AppHandle, urls: Vec<Url>) {
+    if let Some(web) = urls.iter().find_map(links::to_whatsapp_web) {
+        open_chat(app, web);
+    }
+}
+
+/// Abre un enlace de WhatsApp en la ventana principal. Desde otro hilo por lo mismo que
+/// `open_settings`: se puede llamar desde dentro de un manejador de navegación de WebView2.
+fn open_chat(app: &AppHandle, web: Url) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        show_window(&app);
+        if let Some(webview) = app.get_webview(MAIN_WINDOW) {
+            let _ = webview.navigate(web);
+        }
+    });
 }
 
 /// Desde otro hilo, para que Tauri lo encole: creada dentro de un manejador de WebView2 (p. ej. la
