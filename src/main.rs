@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod links;
+#[cfg(windows)]
+mod toast;
 
 use std::path::PathBuf;
 
@@ -80,8 +82,13 @@ fn main() {
             _ => {}
         })
         .setup(|app| {
+            #[cfg(windows)]
+            toast::register(app.handle())?;
             let start_hidden = std::env::args().any(|arg| arg == MINIMIZED_ARG);
             let window = build_main_window(app.handle(), !start_hidden)?;
+            // En Linux WebKitGTK ya envía las notificaciones web al sistema.
+            #[cfg(windows)]
+            toast::attach(&window);
             if start_hidden {
                 set_background(&window, true);
             }
