@@ -330,10 +330,15 @@ fn red_dot() -> Image<'static> {
     Image::new_owned(rgba, SIZE, SIZE)
 }
 
+/// Desde otro hilo: lanzado desde el hilo de WebView2, ShellExecute devuelve OK pero en Windows
+/// no llega a abrir el navegador si no estaba ya abierto.
 fn open_external(app: &AppHandle, url: &Url) {
-    if let Err(err) = app.opener().open_url(url.as_str(), None::<&str>) {
-        eprintln!("no se pudo abrir {url}: {err}");
-    }
+    let (app, url) = (app.clone(), url.to_string());
+    std::thread::spawn(move || {
+        if let Err(err) = app.opener().open_url(&url, None::<&str>) {
+            eprintln!("no se pudo abrir {url}: {err}");
+        }
+    });
 }
 
 /// Ruta en la carpeta Descargas sin sobrescribir archivos existentes: `foto.jpg`, `foto (1).jpg`...
