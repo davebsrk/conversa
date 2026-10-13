@@ -24,7 +24,12 @@ pub struct Settings {
     pub updates: UpdateMode,
     /// Mostrar el texto del mensaje en las notificaciones.
     pub message_preview: bool,
+    /// Activa el atajo global para mostrar u ocultar la ventana (`toggle_shortcut`).
     pub global_shortcut: bool,
+    /// Combinación con los nombres de tecla del navegador, p. ej. `Ctrl+Alt+KeyW`.
+    pub toggle_shortcut: String,
+    /// Atajo global para activar o desactivar el modo privacidad; vacío = sin atajo.
+    pub privacy_shortcut: String,
     /// Zoom de WhatsApp Web (1.0 = 100 %), para quien necesita letra más grande.
     pub zoom: f64,
     /// Desenfocar la lista de chats y los mensajes hasta pasar el ratón por encima.
@@ -55,6 +60,8 @@ impl Default for Settings {
             updates: UpdateMode::Notify,
             message_preview: true,
             global_shortcut: true,
+            toggle_shortcut: "Ctrl+Alt+KeyW".into(),
+            privacy_shortcut: String::new(),
             zoom: 1.0,
             privacy_blur: false,
             list_width: ListWidth::Auto,
@@ -224,6 +231,11 @@ pub fn get_settings(app: AppHandle) -> SettingsView {
 
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: Settings, autostart: bool) -> Result<(), String> {
+    // Primero los atajos: si alguno no se puede usar, no se guarda nada y vuelven los de antes.
+    if let Err(err) = crate::set_shortcuts(&app, &settings) {
+        let _ = crate::set_shortcuts(&app, &get(&app));
+        return Err(err);
+    }
     let autolaunch = app.autolaunch();
     if autostart != autolaunch.is_enabled().unwrap_or(false) {
         let result = if autostart {
@@ -233,18 +245,46 @@ pub fn save_settings(app: AppHandle, settings: Settings, autostart: bool) -> Res
         };
         result.map_err(|err| format!("No se pudo cambiar el inicio con el sistema: {err}"))?;
     }
-    crate::set_global_shortcut(&app, settings.global_shortcut);
+    store(&app, settings)
+}
+
+/// Guarda los ajustes en `settings.json` y aplica los que afectan a WhatsApp (zoom, aspecto).
+fn store(app: &AppHandle, settings: Settings) -> Result<(), String> {
     if let Some(webview) = app.get_webview(crate::MAIN_WINDOW) {
         let _ = webview.set_zoom(settings.zoom.clamp(0.5, 3.0));
     }
-    apply_appearance(&app, &settings);
+    apply_appearance(app, &settings);
 
-    let path = path(&app).ok_or("No se encontró la carpeta de configuración")?;
+    let path = path(app).ok_or("No se encontró la carpeta de configuración")?;
     std::fs::create_dir_all(path.parent().expect("tiene carpeta"))
         .and_then(|_| std::fs::write(&path, serde_json::to_vec_pretty(&settings).expect("JSON")))
         .map_err(|err| format!("No se pudieron guardar los ajustes: {err}"))?;
     *app.state::<SettingsState>().0.lock().expect("ajustes") = settings;
     Ok(())
+}
+
+/// Atajo de privacidad: invierte el modo y refresca el panel de Ajustes si está abierto.
+pub fn toggle_privacy(app: &AppHandle) {
+    let mut settings = get(app);
+    settings.privacy_blur = !settings.privacy_blur;
+    if let Err(err) = store(app, settings) {
+        eprintln!("{err}");
+    }
+    if let Some(panel) = app.get_webview(SETTINGS_PANEL) {
+        let _ = panel.eval("load()");
+    }
+}
+
+/// Mientras el panel graba una combinación nueva: sin atajos, para que la actual no salte.
+#[tauri::command]
+pub fn pause_shortcuts(app: AppHandle) {
+    crate::pause_shortcuts(&app);
+}
+
+/// Al cancelar la grabación: vuelven los atajos guardados.
+#[tauri::command]
+pub fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
+    crate::set_shortcuts(&app, &get(&app))
 }
 
 #[tauri::command]
@@ -265,6 +305,8 @@ mod tests {
         assert_eq!(settings.zoom, 1.0);
         assert!(!settings.privacy_blur);
         assert!(settings.list_width == ListWidth::Auto);
+        assert_eq!(settings.toggle_shortcut, "Ctrl+Alt+KeyW");
+        assert!(settings.privacy_shortcut.is_empty());
     }
 
     #[test]

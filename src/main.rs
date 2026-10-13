@@ -30,7 +30,6 @@ use links::Target;
 const WHATSAPP_URL: &str = "https://web.whatsapp.com/";
 const MAIN_WINDOW: &str = "main";
 const TRAY: &str = "main";
-const TOGGLE_SHORTCUT: &str = "CommandOrControl+Alt+W";
 /// Argumento con el que se lanza al iniciar sesión en el sistema: arranca oculta en la bandeja.
 const MINIMIZED_ARG: &str = "--minimized";
 /// Base del icono de la bandeja con el número de chats sin leer encima.
@@ -163,7 +162,9 @@ fn main() {
             settings::get_settings,
             settings::save_settings,
             settings::check_updates,
-            settings::close_settings
+            settings::close_settings,
+            settings::pause_shortcuts,
+            settings::resume_shortcuts
         ])
         .on_window_event(|window, event| {
             if window.label() != MAIN_WINDOW {
@@ -212,7 +213,10 @@ fn main() {
             }
             build_tray(app.handle())?;
 
-            set_global_shortcut(app.handle(), settings::get(app.handle()).global_shortcut);
+            // Otra app puede tener ya un atajo: no es motivo para no arrancar.
+            if let Err(err) = set_shortcuts(app.handle(), &settings::get(app.handle())) {
+                eprintln!("{err}");
+            }
 
             updates::spawn_periodic_check(app.handle().clone());
 
@@ -237,20 +241,53 @@ fn profile_dir(app: &AppHandle) -> tauri::Result<PathBuf> {
     Ok(app.path().app_data_dir()?.join("profiles").join("default"))
 }
 
-fn set_global_shortcut(app: &AppHandle, enabled: bool) {
+/// Lo que hace un atajo global.
+type Action = fn(&AppHandle);
+
+/// Registra los atajos globales de los ajustes. Si uno no se puede usar (formato inválido u otra app
+/// ya lo tiene) devuelve un mensaje para mostrar en Ajustes.
+fn set_shortcuts(app: &AppHandle, settings: &settings::Settings) -> Result<(), String> {
     let shortcuts = app.global_shortcut();
-    let _ = shortcuts.unregister(TOGGLE_SHORTCUT);
-    if !enabled {
-        return;
-    }
-    if let Err(err) = shortcuts.on_shortcut(TOGGLE_SHORTCUT, |app, _shortcut, event| {
-        if event.state == ShortcutState::Pressed {
-            toggle_window(app);
+    let _ = shortcuts.unregister_all();
+    let actions: [(bool, &str, Action); 2] = [
+        (
+            settings.global_shortcut,
+            &settings.toggle_shortcut,
+            toggle_window,
+        ),
+        (true, &settings.privacy_shortcut, settings::toggle_privacy),
+    ];
+    for (enabled, accelerator, action) in actions {
+        if !enabled || accelerator.is_empty() {
+            continue;
         }
-    }) {
-        // Otra app puede tener ya el atajo: no es motivo para no arrancar.
-        eprintln!("no se pudo registrar el atajo {TOGGLE_SHORTCUT}: {err}");
+        shortcuts
+            .on_shortcut(accelerator, move |app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    action(app);
+                }
+            })
+            .map_err(|err| shortcut_error(accelerator, &err.to_string()))?;
     }
+    Ok(())
+}
+
+/// Mensaje para el usuario, con la combinación legible ("Ctrl + Alt + J").
+fn shortcut_error(accelerator: &str, err: &str) -> String {
+    let pretty = accelerator
+        .split('+')
+        .map(|part| part.trim_start_matches("Key").trim_start_matches("Digit"))
+        .collect::<Vec<_>>()
+        .join(" + ");
+    if err.contains("already registered") {
+        format!("No se pudo usar el atajo {pretty}: ya lo usa otra aplicación.")
+    } else {
+        format!("No se pudo usar el atajo {pretty}: no es una combinación válida.")
+    }
+}
+
+fn pause_shortcuts(app: &AppHandle) {
+    let _ = app.global_shortcut().unregister_all();
 }
 
 fn build_main_window(app: &AppHandle, visible: bool, url: Url) -> tauri::Result<WebviewWindow> {
@@ -537,6 +574,18 @@ fn default_download_path(app: &AppHandle, url: &Url) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::unread_count;
+
+    #[test]
+    fn shortcut_errors_are_readable() {
+        assert_eq!(
+            super::shortcut_error("Ctrl+Alt+KeyJ", "HotKey already registered: HotKey { .. }"),
+            "No se pudo usar el atajo Ctrl + Alt + J: ya lo usa otra aplicación."
+        );
+        assert_eq!(
+            super::shortcut_error("Ctrl+Digit1", "Couldn't recognize \"Foo\" as a valid key"),
+            "No se pudo usar el atajo Ctrl + 1: no es una combinación válida."
+        );
+    }
 
     #[test]
     fn reads_unread_count_from_title() {

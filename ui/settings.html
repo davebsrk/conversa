@@ -46,6 +46,9 @@
   button { cursor: pointer; }
   button:hover { filter: brightness(.96); }
   kbd { font: 12px "Segoe UI", system-ui; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; }
+  .shortcut { min-width: 112px; white-space: nowrap; }
+  .shortcut.recording { border-color: var(--accent); color: var(--accent); }
+  .row .controls { display: flex; align-items: center; gap: 12px; }
   #status { min-height: 20px; margin: 12px 4px 0; font-size: 12px; color: var(--muted); }
   #status.error { color: var(--error); }
 </style>
@@ -117,6 +120,10 @@
       <div class="text">Desenfocar chats y mensajes<small>Se ven al pasar el ratón por encima. Útil si compartes pantalla o hay gente alrededor.</small></div>
       <div class="switch"><input type="checkbox" id="privacyBlur"><span></span></div>
     </label>
+    <div class="row">
+      <div class="text">Atajo para activarlo o desactivarlo<small>Desde cualquier aplicación. Pulsa el botón y luego la combinación; Retroceso lo quita.</small></div>
+      <button class="shortcut" id="privacyShortcut" type="button"></button>
+    </div>
   </div>
 
   <h2>Ventana</h2>
@@ -126,8 +133,11 @@
       <div class="switch"><input type="checkbox" id="closeToTray"><span></span></div>
     </label>
     <label class="row">
-      <div class="text">Atajo para mostrar u ocultar<small><kbd>Ctrl</kbd> + <kbd>Alt</kbd> + <kbd>W</kbd> desde cualquier aplicación.</small></div>
-      <div class="switch"><input type="checkbox" id="globalShortcut"><span></span></div>
+      <div class="text">Atajo para mostrar u ocultar<small>Desde cualquier aplicación. Pulsa el botón para cambiar la combinación.</small></div>
+      <div class="controls">
+        <button class="shortcut" id="toggleShortcut" type="button"></button>
+        <div class="switch"><input type="checkbox" id="globalShortcut"><span></span></div>
+      </div>
     </label>
   </div>
 
@@ -174,6 +184,7 @@
     $("updates").value = settings.updates;
     $("zoom").value = String(settings.zoom);
     $("listWidth").value = settings.listWidth;
+    for (const id of shortcutButtons) showShortcut($(id), settings[id]);
     $("version").textContent = version;
     syncStartHidden();
   }
@@ -184,6 +195,7 @@
     settings.updates = $("updates").value;
     settings.zoom = Number($("zoom").value);
     settings.listWidth = $("listWidth").value;
+    for (const id of shortcutButtons) settings[id] = $(id).dataset.value;
     try {
       await invoke("save_settings", { settings, autostart: $("autostart").checked });
       status("Guardado");
@@ -200,7 +212,54 @@
   });
   const close = () => invoke("close_settings");
   $("back").addEventListener("click", close);
-  document.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+
+  // Atajos: se graban pulsando la combinación (Esc cancela, Retroceso lo quita). Mientras tanto
+  // Conversa suspende sus atajos para que el actual no salte en vez de grabarse.
+  const shortcutButtons = ["toggleShortcut", "privacyShortcut"];
+  const KEY_NAMES = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Space: "Espacio", Super: "Win" };
+  const pretty = (accel) => accel
+    ? accel.split("+").map((p) => KEY_NAMES[p] ?? p.replace(/^Key|^Digit/, "").replace(/^Numpad/, "Num ")).join(" + ")
+    : "Sin atajo";
+  const showShortcut = (btn, value) => { btn.dataset.value = value; btn.textContent = pretty(value); };
+  let recording = null;
+  for (const id of shortcutButtons) {
+    $(id).addEventListener("click", async () => {
+      if (recording) return;
+      recording = $(id);
+      recording.classList.add("recording");
+      recording.textContent = "Pulsa la combinación…";
+      await invoke("pause_shortcuts");
+    });
+  }
+  async function stopRecording(value) {
+    const btn = recording;
+    recording = null;
+    btn.classList.remove("recording");
+    if (value === undefined) {
+      showShortcut(btn, btn.dataset.value);
+      await invoke("resume_shortcuts").catch((err) => status(String(err), true));
+    } else {
+      showShortcut(btn, value);
+      await save();
+    }
+  }
+  document.addEventListener("keydown", (event) => {
+    if (!recording) {
+      if (event.key === "Escape") close();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === "Escape") return stopRecording();
+    if (event.key === "Backspace" || event.key === "Delete") return stopRecording("");
+    if (["Control", "Alt", "Shift", "Meta", "AltGraph"].includes(event.key)) return; // falta la tecla principal
+    const mods = [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super"].filter(Boolean);
+    if (!mods.some((m) => m !== "Shift")) {
+      status("Usa Ctrl, Alt o Win junto a otra tecla (Esc cancela).", true);
+      return;
+    }
+    stopRecording([...mods, event.code].join("+"));
+  }, true);
   load().catch((err) => status(String(err), true));
 </script>
 </body>

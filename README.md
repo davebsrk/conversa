@@ -28,7 +28,8 @@ así que no hay riesgo de baneo por usar un cliente no oficial.
 - **Ajustes** integrados en la ventana (engranaje en la barra lateral de WhatsApp o desde la
   bandeja): tamaño del texto (zoom), iniciar con el sistema, cerrar a la bandeja o salir,
   actualizaciones (avisar, instalar solas o no buscar), ocultar el texto de los mensajes y el atajo.
-- Atajo global <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd> para mostrar u ocultar la ventana.
+- Atajos globales configurables: mostrar u ocultar la ventana (por defecto <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>W</kbd>)
+  y activar o desactivar el modo privacidad.
 - Los enlaces se abren en tu navegador; las descargas van a tu carpeta Descargas.
 - Los enlaces de WhatsApp (`wa.me`, `whatsapp://`, invitaciones a grupos) se abren en Conversa,
   tanto desde el navegador como desde un chat.

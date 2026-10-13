@@ -1,12 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "settings",
-  "description": "El panel de Ajustes puede leer y guardar los ajustes, buscar actualizaciones y cerrarse.",
+  "description": "El panel de Ajustes puede leer y guardar los ajustes, gestionar los atajos, buscar actualizaciones y cerrarse.",
   "permissions": [
     "allow-get-settings",
     "allow-save-settings",
     "allow-check-updates",
-    "allow-close-settings"
+    "allow-close-settings",
+    "allow-pause-shortcuts",
+    "allow-resume-shortcuts"
   ],
   "webviews": [
     "settings"

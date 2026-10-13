@@ -7,6 +7,8 @@ fn main() {
             "save_settings",
             "check_updates",
             "close_settings",
+            "pause_shortcuts",
+            "resume_shortcuts",
         ]),
     ))
     .expect("error en tauri-build");
