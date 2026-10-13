@@ -108,5 +108,5 @@ Principios:
 | 2 — Integración con el sistema | Hecha (bandeja, aviso de no leídos, notificaciones nativas de Windows con foto y respuesta rápida, autoarranque, Ctrl+Alt+W) |
 | 3 — Rendimiento | Hecha en Windows: 155 MB frente a 631 MB de la oficial (minimizadas). En Linux no hay equivalente en WebKitGTK |
 | 4 — Linux | Compila en la CI; falta probarlo en un escritorio Linux real |
-| 5 — Distribución | Workflow de release listo (NSIS, MSI, portable, deb, rpm, AppImage, Flatpak) y PKGBUILD. Pendiente: secretos de firma, primer release, AUR y winget (`wingetcreate new <url del instalador>`) |
+| 5 — Distribución | Workflow de release listo (NSIS, portable, deb, rpm, AppImage, Flatpak; sin MSI: el actualizador lo elegía para instalaciones hechas con NSIS) y PKGBUILD. Pendiente: secretos de firma, primer release, AUR y winget (`wingetcreate new <url del instalador>`) |
 | 6 — Después del MVP | Pendiente: multicuenta (los perfiles ya están aislados) |

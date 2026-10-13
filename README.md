@@ -56,7 +56,7 @@ Descarga la última versión desde [Releases](https://github.com/davebsrk/conver
 
 | Sistema | Archivo |
 |---|---|
-| Windows (instalador) | `Conversa_x.y.z_x64-setup.exe` (o el `.msi`) |
+| Windows (instalador) | `Conversa_x.y.z_x64-setup.exe` |
 | Windows (portable) | `Conversa_x.y.z_x64-portable.exe` |
 | Debian / Ubuntu | `Conversa_x.y.z_amd64.deb` |
 | Fedora / openSUSE | `Conversa-x.y.z-1.x86_64.rpm` |
