@@ -105,7 +105,7 @@ Principios:
 |---|---|
 | 0 — Base y medición | Hecha. Referencia: oficial minimizada 400–630 MB |
 | 1 — Shell mínima | Hecha |
-| 2 — Integración con el sistema | Hecha (bandeja, aviso de no leídos, notificaciones nativas, autoarranque, Ctrl+Alt+W) |
+| 2 — Integración con el sistema | Hecha (bandeja, aviso de no leídos, notificaciones nativas de Windows con foto y respuesta rápida, autoarranque, Ctrl+Alt+W) |
 | 3 — Rendimiento | Hecha en Windows: 155 MB frente a 631 MB de la oficial (minimizadas). En Linux no hay equivalente en WebKitGTK |
 | 4 — Linux | Compila en la CI; falta probarlo en un escritorio Linux real |
 | 5 — Distribución | Workflow de release listo (NSIS, MSI, portable, deb, rpm, AppImage, Flatpak) y PKGBUILD. Pendiente: secretos de firma, primer release, AUR y winget (`wingetcreate new <url del instalador>`) |
