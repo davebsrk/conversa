@@ -4,6 +4,10 @@
 //! la marcamos como gestionada y mostramos un toast propio. Al pulsar el toast se lo decimos a
 //! WhatsApp (`ReportClicked`), que abre ese chat; si además se escribió una respuesta, la
 //! enviamos desde el cuadro de texto del chat una vez confirmado que es el chat correcto.
+//!
+//! Las llamadas entrantes no pasan por ahí: WhatsApp las muestra desde su service worker, y WebView2
+//! las pinta con su aspecto genérico. Las interceptamos en la página (`CALL_SCRIPT`) y mostramos un
+//! toast de llamada de Windows (`show_call`).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -20,6 +24,8 @@ use windows::Foundation::{IReference, TypedEventHandler};
 use windows::UI::Notifications::{
     ToastActivatedEventArgs, ToastNotification, ToastNotificationManager,
 };
+
+use crate::links::IncomingCall;
 use windows::Win32::System::Com::Urlmon::URLDownloadToFileW;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
 use windows::Win32::System::Registry::{HKEY_CURRENT_USER, REG_SZ, RegSetKeyValueW};
@@ -36,6 +42,67 @@ const MAX_PENDING: usize = 100;
 /// Intentos de enviar una respuesta (cada 200 ms) antes de rendirse y mostrar la ventana.
 const REPLY_ATTEMPTS: u32 = 25;
 const APP_ICON: &[u8] = include_bytes!("../icons/128x128@2x.png");
+const CALL_ACCEPT_ICON: &[u8] = include_bytes!("../icons/call-accept.png");
+const CALL_VIDEO_ICON: &[u8] = include_bytes!("../icons/call-video.png");
+const CALL_DECLINE_ICON: &[u8] = include_bytes!("../icons/call-decline.png");
+/// Grupo de los toasts de llamada, para poder quitarlos cuando la llamada termina.
+const CALL_GROUP: &str = "call";
+
+/// Se inyecta en WhatsApp Web. WhatsApp anuncia las llamadas entrantes con
+/// `registration.showNotification(...)`, un `data.callId` y los botones "accept-call" y
+/// "decline-call"; al pulsarlos, su service worker le envía a la página
+/// `ACCEPT_CALL_FROM_NOTIFICATION` o `DECLINE_CALL_FROM_NOTIFICATION` (y
+/// `NOTIFICATION_BANNER_CLICKED` si se pulsa la notificación en sí).
+/// - En lugar de mostrarla, se la pasamos a Conversa con `conversa://call/ring`.
+/// - `getNotifications` también devuelve las nuestras, porque WhatsApp las busca ahí para cerrarlas
+///   cuando la llamada termina; al cerrarlas avisamos con `conversa://call/end`.
+/// - `conversaCallAction` le envía a la página el mismo mensaje que le enviaría el service worker.
+///
+/// Si WhatsApp cambia algo de esto, la notificación vuelve a salir con el aspecto de WebView2.
+pub const CALL_SCRIPT: &str = r#"
+(() => {
+  const calls = new Map(); // callId → { bannerKey, tag }
+  const proto = ServiceWorkerRegistration.prototype;
+  const { showNotification, getNotifications } = proto;
+  proto.showNotification = function (title, options) {
+    const callId = options?.data?.callId;
+    if (typeof callId !== "string" || !options.actions?.some((a) => a.action === "accept-call"))
+      return showNotification.apply(this, arguments);
+    calls.set(callId, { bannerKey: options.data.notificationBannerKey, tag: options.tag });
+    const icon = /^https?:/.test(options.icon ?? "") ? options.icon : "";
+    window.open("conversa://call/ring?" + new URLSearchParams({ id: callId, title, body: options.body ?? "", icon }));
+    return Promise.resolve();
+  };
+  proto.getNotifications = async function (filter) {
+    const shown = await getNotifications.apply(this, arguments);
+    const ours = [...calls]
+      .filter(([, call]) => !filter?.tag || call.tag === filter.tag)
+      .map(([id, call]) => ({
+        tag: call.tag,
+        data: { callId: id, notificationBannerKey: call.bannerKey },
+        close() {
+          calls.delete(id);
+          window.open("conversa://call/end?" + new URLSearchParams({ id }));
+        },
+      }));
+    return [...shown, ...ours];
+  };
+  window.conversaCallAction = (callId, kind) => {
+    const call = calls.get(callId);
+    const [action, message] = {
+      accept: ["ACCEPT_CALL_FROM_NOTIFICATION", { callId }],
+      decline: ["DECLINE_CALL_FROM_NOTIFICATION", { callId }],
+    }[kind] ?? ["NOTIFICATION_BANNER_CLICKED", { bannerKey: call?.bannerKey }];
+    calls.delete(callId);
+    const worker = navigator.serviceWorker;
+    worker?.dispatchEvent(new MessageEvent("message", {
+      data: { action, message },
+      ports: [new MessageChannel().port2],
+      source: worker.controller,
+    }));
+  };
+})();
+"#;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -195,7 +262,7 @@ impl Toast {
         let tag =
             (!self.tag.is_empty()).then(|| short_hash(&format!("{}{}", self.webview, self.tag)));
         let (app, id, webview, title) = (app.clone(), self.id, self.webview, self.title);
-        show_xml(&xml, tag, move |action, reply| {
+        show_xml(&xml, tag, None, move |action, reply| {
             let (app, webview, title) = (app.clone(), webview.clone(), title.clone());
             let _ = app
                 .clone()
@@ -231,7 +298,117 @@ pub fn show_simple(
         xml_escape(title),
         xml_escape(body),
     );
-    show_xml(&xml, Some("app".into()), move |_, _| on_click())
+    show_xml(&xml, Some("app".into()), None, move |_, _| on_click())
+}
+
+/// Toast de llamada entrante de la cuenta `webview`: foto grande de quien llama y botones de
+/// Aceptar y Rechazar. Se queda en pantalla hasta que se responde o WhatsApp avisa de que la
+/// llamada terminó (`remove_call`). Sin sonido: WhatsApp ya hace sonar el tono de llamada.
+/// Bloquea mientras descarga la foto: llamar fuera del hilo principal.
+pub fn show_call(
+    app: &AppHandle,
+    webview: String,
+    call: IncomingCall,
+) -> windows::core::Result<()> {
+    let tag = call_tag(&webview, &call.id);
+    let picture = download_picture(app, &call.title, &call.icon)
+        .or_else(|| app_icon_path(app).ok())
+        .map(|path| {
+            format!(
+                r#"<image hint-crop="circle" src="{}"/>"#,
+                xml_escape(&path.display().to_string())
+            )
+        })
+        .unwrap_or_default();
+    let settings = crate::settings::get(app);
+    let account = crate::accounts::id_of(&webview)
+        .and_then(|id| settings.accounts.iter().find(|a| a.id == id))
+        .filter(|_| settings.accounts.len() > 1)
+        .map(|a| {
+            format!(
+                r#"<text placement="attribution">{}</text>"#,
+                xml_escape(&a.name)
+            )
+        })
+        .unwrap_or_default();
+    let icon = |name: &str, bytes: &[u8]| {
+        asset_path(app, name, bytes)
+            .map(|path| xml_escape(&path.display().to_string()))
+            .unwrap_or_default()
+    };
+    let accept = if call.body.to_lowercase().contains("video") {
+        icon("call-video.png", CALL_VIDEO_ICON)
+    } else {
+        icon("call-accept.png", CALL_ACCEPT_ICON)
+    };
+    let decline = icon("call-decline.png", CALL_DECLINE_ICON);
+    let xml = format!(
+        r#"<toast scenario="incomingCall" launch="open" useButtonStyle="true">
+            <visual><binding template="ToastGeneric">
+                <text hint-callScenarioCenterAlign="true">{title}</text>
+                <text hint-callScenarioCenterAlign="true">{body}</text>
+                {account}
+                {picture}
+            </binding></visual>
+            <actions>
+                <action content="Aceptar" arguments="accept" imageUri="{accept}" hint-buttonStyle="Success"/>
+                <action content="Rechazar" arguments="decline" imageUri="{decline}" hint-buttonStyle="Critical"/>
+            </actions>
+            <audio silent="true"/>
+        </toast>"#,
+        title = xml_escape(&call.title),
+        body = xml_escape(if call.body.is_empty() {
+            "Llamada entrante"
+        } else {
+            &call.body
+        }),
+    );
+    let (app, id) = (app.clone(), call.id);
+    show_xml(&xml, Some(tag), Some(CALL_GROUP), move |action, _| {
+        let (app, webview, id) = (app.clone(), webview.clone(), id.clone());
+        let _ = app
+            .clone()
+            .run_on_main_thread(move || call_activated(&app, &webview, &id, &action));
+    })
+}
+
+/// Quita el toast de una llamada que ya terminó (contestada, rechazada o perdida).
+pub fn remove_call(webview: &str, id: &str) {
+    if let Ok(history) = ToastNotificationManager::History() {
+        let _ = history.RemoveGroupedTagWithId(
+            &HSTRING::from(call_tag(webview, id)),
+            &HSTRING::from(CALL_GROUP),
+            &HSTRING::from(AUMID),
+        );
+    }
+}
+
+fn call_tag(webview: &str, id: &str) -> String {
+    short_hash(&format!("call{webview}{id}"))
+}
+
+/// En el hilo principal. Aceptar abre la ventana en esa cuenta (la llamada se ve ahí); rechazar no
+/// muestra nada; pulsar el toast abre el chat de quien llama, como la notificación de WhatsApp.
+fn call_activated(app: &AppHandle, webview: &str, id: &str, action: &str) {
+    let Some(view) = app.get_webview(webview) else {
+        return;
+    };
+    let kind = match action {
+        "accept" | "decline" => action,
+        _ => "open",
+    };
+    let _ = view.eval(format!(
+        "window.conversaCallAction?.({}, {kind:?})",
+        serde_json::to_string(id).unwrap_or_default()
+    ));
+    if kind == "decline" {
+        return;
+    }
+    if let Some(account) = crate::accounts::id_of(webview) {
+        crate::accounts::switch(app, account);
+        crate::settings::apply_appearance(app, &crate::settings::get(app));
+    }
+    crate::show_window(app);
 }
 
 /// Muestra un toast; `on_activated` recibe los `arguments` de lo pulsado (el toast o un botón) y
@@ -239,6 +416,7 @@ pub fn show_simple(
 fn show_xml(
     xml: &str,
     tag: Option<String>,
+    group: Option<&str>,
     on_activated: impl Fn(String, Option<String>) + Send + 'static,
 ) -> windows::core::Result<()> {
     unsafe {
@@ -249,6 +427,9 @@ fn show_xml(
     let toast = ToastNotification::CreateToastNotification(&doc)?;
     if let Some(tag) = tag {
         toast.SetTag(&HSTRING::from(tag))?;
+    }
+    if let Some(group) = group {
+        toast.SetGroup(&HSTRING::from(group))?;
     }
     toast.Activated(&TypedEventHandler::new(
         move |_, args: windows::core::Ref<IInspectable>| {
@@ -480,11 +661,16 @@ fn download_picture(app: &AppHandle, tag: &str, url: &str) -> Option<PathBuf> {
 }
 
 fn app_icon_path(app: &AppHandle) -> tauri::Result<PathBuf> {
-    let path = app.path().app_data_dir()?.join("icon.png");
-    // Se reescribe si cambia (p. ej. tras una actualización con icono nuevo).
-    if std::fs::read(&path).ok().as_deref() != Some(APP_ICON) {
+    asset_path(app, "icon.png", APP_ICON)
+}
+
+/// Una imagen de la app en disco, para los toasts (que solo aceptan rutas).
+fn asset_path(app: &AppHandle, name: &str, bytes: &[u8]) -> tauri::Result<PathBuf> {
+    let path = app.path().app_data_dir()?.join(name);
+    // Se reescribe si cambia (p. ej. tras una actualización con iconos nuevos).
+    if std::fs::read(&path).ok().as_deref() != Some(bytes) {
         std::fs::create_dir_all(path.parent().expect("tiene carpeta"))?;
-        std::fs::write(&path, APP_ICON)?;
+        std::fs::write(&path, bytes)?;
     }
     Ok(path)
 }

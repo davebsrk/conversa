@@ -53,6 +53,8 @@ const TRAY_UNREAD_ICON: &[u8] = include_bytes!("../icons/tray-unread.png");
 ///   que interceptamos en `on_new_window`. No se navega la página: con mensajes pendientes de
 ///   enviar, WhatsApp mostraría "¿Abandonar sitio?" y quedaría bloqueado hasta responder.
 ///   Si WhatsApp redibuja la barra, se vuelve a añadir.
+/// - Extiende el tema de chat elegido (el de los mensajes enviados) a todo el chat (ver
+///   `syncChatTheme`).
 const INIT_SCRIPT: &str = r##"
 const ACCOUNT_COLORS = ["#059669", "#2563eb", "#d97706", "#db2777", "#7c3aed", "#0891b2"];
 const GEAR_SVG = '<svg viewBox="0 0 24 24" height="24" width="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>';
@@ -184,12 +186,73 @@ function addSettingsButton() {
   button.addEventListener("click", () => { window.open("conversa://settings"); });
   item.before(clone);
 }
+// Tema del chat: WhatsApp pinta los mensajes enviados con el tema elegido (una clase en su
+// msg-container), pero el resto del chat (#main: iconos, botón de enviar, diálogos como "Edita el
+// mensaje") con otra clase de tema distinta. Además, al abrir un chat lo redibuja un instante sin
+// ninguna clase, en el verde por defecto. Copiamos las variables del tema de los mensajes a #main y
+// a la clase de tema del chat; se guardan para aplicarlas desde la carga, antes de pintar nada.
+// Las clases se reconocen por sus reglas CSS: las de tema, ".x.x, .x.x:root { --WDS-...: ... }", y
+// la del bocadillo enviado, "background-color: var(--WDS-systems-bubble-surface-outgoing)".
+const OUTGOING_VAR = "--WDS-systems-bubble-surface-outgoing";
+let conversaThemes = new Map();
+let conversaOutgoing = null;
+let conversaThemeRules = -1;
+// WhatsApp va añadiendo reglas a sus hojas de estilo según pinta: se repasan si ha cambiado el total.
+function scanThemes() {
+  let total = 0;
+  for (const sheet of document.styleSheets) { try { total += sheet.cssRules.length; } catch {} }
+  if (total === conversaThemeRules) return;
+  conversaThemeRules = total;
+  conversaThemes = new Map();
+  const walk = (rules) => {
+    for (const rule of rules) {
+      if (rule.cssRules?.length) walk(rule.cssRules);
+      if (!rule.style) continue;
+      const theme = rule.selectorText?.match(/^\.([\w-]+)\.\1\b/);
+      if (theme && rule.style.getPropertyValue(OUTGOING_VAR))
+        conversaThemes.set(theme[1], [...rule.style].filter((property) => property.startsWith("--")));
+      const bubble = rule.selectorText?.match(/^\.([\w-]+)$/);
+      if (bubble && rule.style.backgroundColor === `var(${OUTGOING_VAR})`) conversaOutgoing = bubble[1];
+    }
+  };
+  for (const sheet of document.styleSheets) { try { walk(sheet.cssRules); } catch {} }
+}
+function setChatTheme(css) {
+  let style = document.getElementById("conversa-theme");
+  if (!style) {
+    style = document.createElement("style");
+    style.id = "conversa-theme";
+    (document.head ?? document.documentElement).append(style);
+  }
+  if (style.textContent === css) return;
+  style.textContent = css;
+  try { localStorage.setItem("conversa-chat-theme", css); } catch {}
+}
+(function applySavedChatTheme() {
+  if (!document.documentElement) return requestAnimationFrame(applySavedChatTheme);
+  try { setChatTheme(localStorage.getItem("conversa-chat-theme") ?? ""); } catch {}
+})();
+function syncChatTheme() {
+  const main = document.querySelector("#main");
+  if (!main) return;
+  scanThemes();
+  const message = conversaOutgoing && main.querySelector(`.${conversaOutgoing}`)?.closest('[data-testid="msg-container"]');
+  if (!message) return; // aún no hay mensajes enviados a la vista
+  const isTheme = (name) => conversaThemes.has(name);
+  const own = [...message.classList].find(isTheme);
+  const chat = [...main.classList].find(isTheme);
+  if (!chat) return; // sin clase de tema en el chat: WhatsApp lo está redibujando
+  if (!own || own === chat) return setChatTheme("");
+  const style = getComputedStyle(message);
+  const variables = conversaThemes.get(own).map((name) => `${name}: ${style.getPropertyValue(name)};`).join(" ");
+  setChatTheme(`#main, .${chat}.${chat}.${chat} { ${variables} }`);
+}
 document.addEventListener("DOMContentLoaded", () => {
   let scheduled = false;
   new MutationObserver(() => {
     if (scheduled) return;
     scheduled = true;
-    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); renderAccounts(); markListColumns(); });
+    requestAnimationFrame(() => { scheduled = false; addSettingsButton(); hideItems(); renderAccounts(); markListColumns(); syncChatTheme(); });
   }).observe(document.body, { childList: true, subtree: true });
 });
 window.addEventListener("click", (event) => {
@@ -384,6 +447,7 @@ fn build_window(app: &AppHandle, visible: bool) -> tauri::Result<Window> {
 fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<WebviewBuilder<Wry>> {
     let on_nav = app.clone();
     let on_new = app.clone();
+    let label = accounts::label(id);
 
     let builder = WebviewBuilder::new(accounts::label(id), WebviewUrl::External(url))
         .data_directory(accounts::profile_dir(app, id)?)
@@ -406,7 +470,8 @@ fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<Webvie
                 switch_account(&on_nav, id);
                 false
             }
-            Target::Blocked => false,
+            // Las llamadas solo llegan por window.open (on_new_window).
+            Target::IncomingCall(_) | Target::CallEnded(_) | Target::Blocked => false,
         })
         .on_new_window(move |url, _features| match links::classify(&url) {
             Target::Internal => NewWindowResponse::Allow,
@@ -424,6 +489,14 @@ fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<Webvie
             }
             Target::SwitchAccount(id) => {
                 switch_account(&on_new, id);
+                NewWindowResponse::Deny
+            }
+            Target::IncomingCall(call) => {
+                incoming_call(&on_new, label.clone(), call);
+                NewWindowResponse::Deny
+            }
+            Target::CallEnded(id) => {
+                call_ended(&label, &id);
                 NewWindowResponse::Deny
             }
             Target::Blocked => NewWindowResponse::Deny,
@@ -464,6 +537,9 @@ fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<Webvie
 
     #[cfg(target_os = "linux")]
     let builder = builder.user_agent(LINUX_USER_AGENT);
+    // En Linux WebKitGTK ya muestra las notificaciones de llamada del sistema.
+    #[cfg(windows)]
+    let builder = builder.initialization_script(toast::CALL_SCRIPT);
 
     Ok(builder)
 }
@@ -523,6 +599,29 @@ fn open_chat(app: &AppHandle, web: Url) {
             let _ = webview.navigate(web);
         }
     });
+}
+
+/// Muestra nuestro toast de llamada entrante (ver `toast::CALL_SCRIPT`). Desde otro hilo: descarga
+/// la foto de quien llama.
+fn incoming_call(app: &AppHandle, webview: String, call: links::IncomingCall) {
+    #[cfg(windows)]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            if let Err(err) = toast::show_call(&app, webview, call) {
+                eprintln!("no se pudo mostrar la llamada: {err}");
+            }
+        });
+    }
+    #[cfg(not(windows))]
+    let _ = (app, webview, call);
+}
+
+fn call_ended(webview: &str, id: &str) {
+    #[cfg(windows)]
+    toast::remove_call(webview, id);
+    #[cfg(not(windows))]
+    let _ = (webview, id);
 }
 
 /// Desde otro hilo, por lo mismo que `open_settings`.

@@ -19,8 +19,25 @@ pub enum Target {
     AppSettings,
     /// `conversa://account/<id>`: los botones de cuenta de la barra lateral.
     SwitchAccount(String),
+    /// `conversa://call/ring?id=…&title=…&body=…&icon=…`: la notificación de una llamada entrante,
+    /// que el script de `toast` le quita a WhatsApp para mostrarla con nuestro propio diseño.
+    IncomingCall(IncomingCall),
+    /// `conversa://call/end?id=…`: WhatsApp retira la notificación de esa llamada.
+    CallEnded(String),
     /// Esquemas desconocidos: no se abren en ningún sitio.
     Blocked,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct IncomingCall {
+    /// El `callId` de WhatsApp, con el que se acepta o rechaza.
+    pub id: String,
+    /// Quién llama.
+    pub title: String,
+    /// "Llamada entrante", "Videollamada entrante"...
+    pub body: String,
+    /// La foto de quien llama (URL http(s)) o vacío.
+    pub icon: String,
 }
 
 pub fn classify(url: &Url) -> Target {
@@ -39,8 +56,32 @@ pub fn classify(url: &Url) -> Target {
                 Target::Blocked
             }
         }
+        "conversa" if url.host_str() == Some("call") => call(url).unwrap_or(Target::Blocked),
         "conversa" => Target::AppSettings,
         _ => Target::Blocked,
+    }
+}
+
+fn call(url: &Url) -> Option<Target> {
+    let query = |name: &str| {
+        url.query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_default()
+    };
+    let id = query("id");
+    if id.is_empty() || id.len() > 200 {
+        return None;
+    }
+    match url.path() {
+        "/ring" => Some(Target::IncomingCall(IncomingCall {
+            id,
+            title: query("title"),
+            body: query("body"),
+            icon: query("icon"),
+        })),
+        "/end" => Some(Target::CallEnded(id)),
+        _ => None,
     }
 }
 
@@ -229,6 +270,27 @@ mod tests {
         assert_eq!(target("conversa://account/a%2Fb"), Target::Blocked);
         assert_eq!(target("conversa://account/a/b"), Target::Blocked);
         assert_eq!(target("conversa://account/"), Target::Blocked);
+    }
+
+    #[test]
+    fn conversa_scheme_reports_calls() {
+        assert_eq!(
+            target(
+                "conversa://call/ring?id=AB12&title=Ana+L%C3%B3pez&body=Videollamada+entrante&icon="
+            ),
+            Target::IncomingCall(IncomingCall {
+                id: "AB12".into(),
+                title: "Ana López".into(),
+                body: "Videollamada entrante".into(),
+                icon: String::new(),
+            })
+        );
+        assert_eq!(
+            target("conversa://call/end?id=AB12"),
+            Target::CallEnded("AB12".into())
+        );
+        assert_eq!(target("conversa://call/ring?title=Ana"), Target::Blocked);
+        assert_eq!(target("conversa://call/other?id=AB12"), Target::Blocked);
     }
 
     #[test]
