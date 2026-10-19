@@ -181,8 +181,20 @@ fn slide(panel: &Webview, from: i32, to: i32, close: bool, generation: u64) {
         }
         std::thread::sleep(std::time::Duration::from_millis(16));
     }
-    if close && PANEL_ANIMATION.load(Ordering::SeqCst) == generation {
+    if PANEL_ANIMATION.load(Ordering::SeqCst) != generation {
+        return;
+    }
+    if close {
         let _ = panel.close();
+        // El teclado vuelve a WhatsApp, para seguir escribiendo.
+        let app = panel.app_handle();
+        if let Some(webview) = app.get_webview(&crate::accounts::label(&get(app).active_account)) {
+            let _ = webview.set_focus();
+        }
+    } else {
+        // Ya colocado, el panel se queda el teclado (para Esc): al crearlo, la ventana principal
+        // aún puede devolvérselo a WhatsApp.
+        let _ = panel.set_focus();
     }
 }
 
