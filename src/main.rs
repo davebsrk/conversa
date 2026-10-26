@@ -452,6 +452,8 @@ fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<Webvie
     let builder = WebviewBuilder::new(accounts::label(id), WebviewUrl::External(url))
         .data_directory(accounts::profile_dir(app, id)?)
         .initialization_script(INIT_SCRIPT)
+        // Sin esto Tauri se queda con los archivos soltados y WhatsApp no recibe el drop.
+        .disable_drag_drop_handler()
         .on_navigation(move |url| match links::classify(url) {
             Target::Internal => true,
             Target::External => {
