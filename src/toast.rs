@@ -10,10 +10,11 @@
 //! toast de llamada de Windows (`show_call`).
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, mpsc};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, Webview};
@@ -47,6 +48,18 @@ const CALL_VIDEO_ICON: &[u8] = include_bytes!("../icons/call-video.png");
 const CALL_DECLINE_ICON: &[u8] = include_bytes!("../icons/call-decline.png");
 /// Grupo de los toasts de llamada, para poder quitarlos cuando la llamada termina.
 const CALL_GROUP: &str = "call";
+/// Si WhatsApp no avisa de que la llamada terminó (p. ej. se recargó la página), su toast se quita
+/// solo pasado este tiempo: una llamada no suena tanto.
+const CALL_TIMEOUT: Duration = Duration::from_secs(120);
+/// Margen antes de quitar el toast de una llamada que WhatsApp retira: si la vuelve a anunciar
+/// enseguida (cerrar y volver a mostrar es una forma de actualizar una notificación), el toast se
+/// queda como está en vez de desaparecer y volver a saltar.
+const CALL_END_DELAY: Duration = Duration::from_millis(400);
+/// Lo máximo que una notificación espera a la foto del contacto. Si tarda más (red lenta), sale con
+/// la foto anterior o el icono de la app: avisar a tiempo importa más que la foto.
+const PICTURE_WAIT: Duration = Duration::from_millis(1200);
+/// Una foto descargada hace menos de esto se usa sin volver a pedirla.
+const PICTURE_FRESH: Duration = Duration::from_secs(60 * 60);
 
 /// Se inyecta en WhatsApp Web. WhatsApp anuncia las llamadas entrantes con
 /// `registration.showNotification(...)`, un `data.callId` y los botones "accept-call" y
@@ -58,19 +71,26 @@ const CALL_GROUP: &str = "call";
 ///   cuando la llamada termina; al cerrarlas avisamos con `conversa://call/end`.
 /// - `conversaCallAction` le envía a la página el mismo mensaje que le enviaría el service worker.
 ///
+/// - WhatsApp puede anunciar la misma llamada más de una vez (p. ej. al resolver el nombre o la foto):
+///   solo se avisa a Conversa si cambia el texto, y nunca de una llamada ya respondida desde el toast.
+///
 /// Si WhatsApp cambia algo de esto, la notificación vuelve a salir con el aspecto de WebView2.
 pub const CALL_SCRIPT: &str = r#"
 (() => {
-  const calls = new Map(); // callId → { bannerKey, tag }
+  const calls = new Map(); // callId → { bannerKey, tag, title, body }
+  const answered = new Set(); // callId de las llamadas respondidas desde nuestro toast
   const proto = ServiceWorkerRegistration.prototype;
   const { showNotification, getNotifications } = proto;
   proto.showNotification = function (title, options) {
     const callId = options?.data?.callId;
     if (typeof callId !== "string" || !options.actions?.some((a) => a.action === "accept-call"))
       return showNotification.apply(this, arguments);
-    calls.set(callId, { bannerKey: options.data.notificationBannerKey, tag: options.tag });
+    const body = options.body ?? "";
+    const shown = calls.get(callId);
+    calls.set(callId, { bannerKey: options.data.notificationBannerKey, tag: options.tag, title, body });
+    if (answered.has(callId) || (shown && shown.title === title && shown.body === body)) return Promise.resolve();
     const icon = /^https?:/.test(options.icon ?? "") ? options.icon : "";
-    window.open("conversa://call/ring?" + new URLSearchParams({ id: callId, title, body: options.body ?? "", icon }));
+    window.open("conversa://call/ring?" + new URLSearchParams({ id: callId, title, body, icon }));
     return Promise.resolve();
   };
   proto.getNotifications = async function (filter) {
@@ -94,6 +114,7 @@ pub const CALL_SCRIPT: &str = r#"
       decline: ["DECLINE_CALL_FROM_NOTIFICATION", { callId }],
     }[kind] ?? ["NOTIFICATION_BANNER_CLICKED", { bannerKey: call?.bannerKey }];
     calls.delete(callId);
+    answered.add(callId);
     const worker = navigator.serviceWorker;
     worker?.dispatchEvent(new MessageEvent("message", {
       data: { action, message },
@@ -109,6 +130,20 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 thread_local! {
     /// Notificaciones web a las que aún podemos avisar de un clic. Solo se toca en el hilo principal.
     static PENDING: RefCell<VecDeque<(u64, ICoreWebView2Notification)>> = Default::default();
+}
+
+/// La llamada que está sonando en cada cuenta (por webview). Hay un solo toast de llamada por
+/// cuenta: una llamada nueva sustituye al de la anterior en lugar de sumarse.
+static CALLS: LazyLock<Mutex<HashMap<String, ActiveCall>>> = LazyLock::new(Default::default);
+
+struct ActiveCall {
+    /// Distingue este anuncio de otros de la misma cuenta.
+    seq: u64,
+    id: String,
+    title: String,
+    body: String,
+    /// WhatsApp ha retirado su notificación: el toast se quita tras `CALL_END_DELAY`.
+    ending: bool,
 }
 
 /// Da identidad a la app para los toasts: nombre e icono, incluso en la versión portable.
@@ -310,7 +345,28 @@ pub fn show_call(
     webview: String,
     call: IncomingCall,
 ) -> windows::core::Result<()> {
-    let tag = call_tag(&webview, &call.id);
+    let seq = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    {
+        let mut calls = CALLS.lock().expect("llamadas");
+        if let Some(active) = calls.get_mut(&webview)
+            && (&active.id, &active.title, &active.body) == (&call.id, &call.title, &call.body)
+        {
+            // La misma llamada anunciada otra vez: su toast ya está en pantalla (o a punto de
+            // salir). Volver a mostrarlo lo haría saltar de nuevo, como una segunda notificación.
+            active.ending = false;
+            return Ok(());
+        }
+        calls.insert(
+            webview.clone(),
+            ActiveCall {
+                seq,
+                id: call.id.clone(),
+                title: call.title.clone(),
+                body: call.body.clone(),
+                ending: false,
+            },
+        );
+    }
     let picture = download_picture(app, &call.title, &call.icon)
         .or_else(|| app_icon_path(app).ok())
         .map(|path| {
@@ -363,33 +419,77 @@ pub fn show_call(
             &call.body
         }),
     );
-    let (app, id) = (app.clone(), call.id);
-    show_xml(&xml, Some(tag), Some(CALL_GROUP), move |action, _| {
-        let (app, webview, id) = (app.clone(), webview.clone(), id.clone());
-        let _ = app
-            .clone()
-            .run_on_main_thread(move || call_activated(&app, &webview, &id, &action));
-    })
+    {
+        let mut calls = CALLS.lock().expect("llamadas");
+        // Mientras se descargaba la foto la llamada terminó o la sustituyó otra: mostrarlo ahora
+        // dejaría en pantalla el toast de una llamada que ya no existe.
+        if calls.get(&webview).is_none_or(|active| active.seq != seq) {
+            return Ok(());
+        }
+        let (app, view, id) = (app.clone(), webview.clone(), call.id);
+        let tag = Some(call_tag(&webview));
+        let shown = show_xml(&xml, tag, Some(CALL_GROUP), move |action, _| {
+            let (app, view, id) = (app.clone(), view.clone(), id.clone());
+            let _ = app
+                .clone()
+                .run_on_main_thread(move || call_activated(&app, &view, &id, &action));
+        });
+        if shown.is_err() {
+            calls.remove(&webview);
+        }
+        shown?;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(CALL_TIMEOUT);
+        end_call(&webview, |active| active.seq == seq);
+    });
+    Ok(())
 }
 
-/// Quita el toast de una llamada que ya terminó (contestada, rechazada o perdida).
+/// WhatsApp retira la notificación de una llamada (contestada, rechazada o perdida): su toast se
+/// quita tras `CALL_END_DELAY`, salvo que la vuelva a anunciar antes.
 pub fn remove_call(webview: &str, id: &str) {
+    let seq = {
+        let mut calls = CALLS.lock().expect("llamadas");
+        // Si no es la que suena ahora en esa cuenta, su toast ya no está: no hay que tocar el actual.
+        let Some(active) = calls.get_mut(webview).filter(|active| active.id == id) else {
+            return;
+        };
+        active.ending = true;
+        active.seq
+    };
+    let webview = webview.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(CALL_END_DELAY);
+        end_call(&webview, |active| active.seq == seq && active.ending);
+    });
+}
+
+/// Olvida la llamada que suena en `webview` y quita su toast, si es la que dice `is_it`.
+fn end_call(webview: &str, is_it: impl Fn(&ActiveCall) -> bool) {
+    let mut calls = CALLS.lock().expect("llamadas");
+    if !calls.get(webview).is_some_and(is_it) {
+        return;
+    }
+    calls.remove(webview);
     if let Ok(history) = ToastNotificationManager::History() {
         let _ = history.RemoveGroupedTagWithId(
-            &HSTRING::from(call_tag(webview, id)),
+            &HSTRING::from(call_tag(webview)),
             &HSTRING::from(CALL_GROUP),
             &HSTRING::from(AUMID),
         );
     }
 }
 
-fn call_tag(webview: &str, id: &str) -> String {
-    short_hash(&format!("call{webview}{id}"))
+fn call_tag(webview: &str) -> String {
+    short_hash(&format!("call{webview}"))
 }
 
 /// En el hilo principal. Aceptar abre la ventana en esa cuenta (la llamada se ve ahí); rechazar no
 /// muestra nada; pulsar el toast abre el chat de quien llama, como la notificación de WhatsApp.
 fn call_activated(app: &AppHandle, webview: &str, id: &str, action: &str) {
+    // Windows ya ha cerrado el toast; la llamada deja de contar como "sonando".
+    end_call(webview, |active| active.id == id);
     let Some(view) = app.get_webview(webview) else {
         return;
     };
@@ -483,7 +583,7 @@ fn activated(
         }
     }
     match (reply, app.get_webview(webview)) {
-        (Some(text), Some(webview)) => send_reply(webview, title, text, REPLY_ATTEMPTS),
+        (Some(text), Some(webview)) => send_reply(webview, title, text, false, REPLY_ATTEMPTS),
         _ => {
             if let Some(account) = crate::accounts::id_of(webview) {
                 crate::accounts::switch(app, account);
@@ -494,17 +594,29 @@ fn activated(
     }
 }
 
-/// Escribe y envía la respuesta en el chat abierto, pero solo si su cabecera coincide con el
-/// remitente de la notificación. Si no llega a abrirse, muestra la ventana para responder a mano.
-fn send_reply(webview: Webview, title: String, text: String, attempts: u32) {
+/// Escribe y envía la respuesta en el chat abierto, pero solo si es el del remitente de la
+/// notificación. Si no llega a abrirse, muestra la ventana para responder a mano.
+///
+/// El nombre del chat tiene que coincidir entero con el remitente: buscarlo en cualquier parte de
+/// la cabecera coincidía también con otro chat abierto que lo contuviera (un grupo con esa persona
+/// entre sus participantes, "Ana" dentro de "Ana María") y la respuesta podía acabar ahí si
+/// WhatsApp tardaba en cambiar de chat.
+///
+/// `typed`: el texto ya se escribió en un intento anterior; ahora toca enviarlo. No se comprueba
+/// comparando con el contenido del cuadro, que WhatsApp puede transformar (emojis, formato): se
+/// volvería a escribir en cada intento.
+fn send_reply(webview: Webview, title: String, text: String, typed: bool, attempts: u32) {
     let script = format!(
         r##"(() => {{
             const norm = s => s.replace(/[^\p{{L}}\p{{N}}]/gu, "").toLowerCase();
             const title = norm({title}), text = {text};
             const header = document.querySelector("#main header");
             const box = document.querySelector('#main footer [contenteditable="true"]');
-            if (!title || !header || !box || !norm(header.textContent).includes(title)) return "wait";
-            if (!box.textContent.includes(text)) {{
+            if (!title || !header || !box) return "wait";
+            const isSender = [...header.querySelectorAll("span, [title]")]
+                .some((el) => norm(el.textContent) === title || norm(el.getAttribute("title") ?? "") === title);
+            if (!isSender) return "wait";
+            if (!{typed} || !box.textContent.trim()) {{
                 box.focus();
                 document.execCommand("insertText", false, text);
                 return "typed";
@@ -520,6 +632,7 @@ fn send_reply(webview: Webview, title: String, text: String, attempts: u32) {
         if result.contains("sent") {
             return;
         }
+        let typed = typed || result.contains("typed");
         if attempts == 0 {
             let app = retry.app_handle().clone();
             let _ = retry.run_on_main_thread(move || crate::show_window(&app));
@@ -528,7 +641,7 @@ fn send_reply(webview: Webview, title: String, text: String, attempts: u32) {
         let (webview, title, text) = (retry.clone(), title.clone(), text.clone());
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(200));
-            send_reply(webview, title, text, attempts - 1);
+            send_reply(webview, title, text, typed, attempts - 1);
         });
     });
 }
@@ -574,6 +687,7 @@ fn mark_read(webview: Webview, title: String, attempts: u32) {
             press_escape(&retry);
         }
         if result == "done" || result == "already" {
+            release_focus_later(&retry);
             return;
         }
         if let Some((x, y)) = result
@@ -594,6 +708,7 @@ fn mark_read(webview: Webview, title: String, attempts: u32) {
             );
         }
         if attempts == 0 {
+            release_focus_later(&retry);
             let _ = show_simple(
                 "No se pudo marcar como leído",
                 &format!("No encontré el chat de {title} en la lista. Ábrelo en Conversa."),
@@ -607,6 +722,17 @@ fn mark_read(webview: Webview, title: String, attempts: u32) {
             std::thread::sleep(Duration::from_millis(250));
             mark_read(webview, title, attempts - 1);
         });
+    });
+}
+
+/// El ratón y el teclado de DevTools dejan el foco en la página. Con la ventana oculta, WhatsApp
+/// creería que se está mirando el chat abierto: lo daría por leído y no avisaría de sus mensajes.
+/// Se suelta un momento después, cuando la página ya ha procesado lo enviado.
+fn release_focus_later(webview: &Webview) {
+    let app = webview.app_handle().clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        crate::release_focus_if_background(&app);
     });
 }
 
@@ -636,7 +762,10 @@ fn send_input<const N: usize>(webview: &Webview, events: [(&'static str, String)
     });
 }
 
-/// La foto del contacto, en caché por chat. `None` si no es una URL http(s) o falla la descarga.
+/// La foto del contacto, en caché por chat. `None` si no es una URL http(s) o no hay foto que usar.
+///
+/// Nunca retrasa la notificación más de `PICTURE_WAIT`: una foto reciente se usa sin descargar, y
+/// si la descarga tarda se devuelve la anterior (o nada) mientras termina para la próxima vez.
 fn download_picture(app: &AppHandle, tag: &str, url: &str) -> Option<PathBuf> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
         return None;
@@ -647,17 +776,31 @@ fn download_picture(app: &AppHandle, tag: &str, url: &str) -> Option<PathBuf> {
         "{}.jpg",
         short_hash(if tag.is_empty() { url } else { tag })
     ));
-    unsafe {
-        URLDownloadToFileW(
-            None,
-            &HSTRING::from(url),
-            &HSTRING::from(path.as_os_str()),
-            0,
-            None,
-        )
+    let fresh = std::fs::metadata(&path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age < PICTURE_FRESH);
+    if fresh {
+        return Some(path);
     }
-    .ok()?;
-    Some(path)
+    let (done, wait) = mpsc::channel();
+    let (url, target) = (HSTRING::from(url), path.clone());
+    std::thread::spawn(move || {
+        // A un archivo temporal: quien use mientras tanto la foto anterior no la ve a medias.
+        let part =
+            target.with_extension(format!("{}.part", NEXT_ID.fetch_add(1, Ordering::Relaxed)));
+        let downloaded =
+            unsafe { URLDownloadToFileW(None, &url, &HSTRING::from(part.as_os_str()), 0, None) }
+                .is_ok()
+                && std::fs::rename(&part, &target).is_ok();
+        if !downloaded {
+            let _ = std::fs::remove_file(&part);
+        }
+        let _ = done.send(());
+    });
+    let _ = wait.recv_timeout(PICTURE_WAIT);
+    path.exists().then_some(path)
 }
 
 fn app_icon_path(app: &AppHandle) -> tauri::Result<PathBuf> {
@@ -682,12 +825,21 @@ fn short_hash(value: &str) -> String {
 }
 
 fn xml_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
+    let mut escaped = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            // Caracteres que XML 1.0 no admite ni escapados: con uno solo en un mensaje, Windows
+            // rechaza el toast entero y la notificación se pierde.
+            '\0'..='\u{8}' | '\u{B}' | '\u{C}' | '\u{E}'..='\u{1F}' | '\u{FFFE}' | '\u{FFFF}' => {}
+            c => escaped.push(c),
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]
@@ -699,6 +851,15 @@ mod tests {
         assert_eq!(
             xml_escape(r#"<b>"Tom" & 'Jerry'</b>"#),
             "&lt;b&gt;&quot;Tom&quot; &amp; &apos;Jerry&apos;&lt;/b&gt;"
+        );
+    }
+
+    #[test]
+    fn drops_characters_xml_rejects() {
+        assert_eq!(xml_escape("a\u{0}b\u{8}c\u{1B}d\u{FFFF}"), "abcd");
+        assert_eq!(
+            xml_escape("línea 1\n\tlínea 2\r 😀"),
+            "línea 1\n\tlínea 2\r 😀"
         );
     }
 }

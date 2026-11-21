@@ -116,6 +116,8 @@ pub fn init(app: &AppHandle) {
     {
         settings.active_account = settings.accounts[0].id.clone();
     }
+    // Un settings.json editado a mano con un zoom imposible dejaría WhatsApp ilegible.
+    settings.zoom = settings.zoom.clamp(0.5, 3.0);
     app.manage(SettingsState(Mutex::new(settings)));
 }
 
@@ -153,6 +155,9 @@ pub fn open_panel(app: &AppHandle) -> tauri::Result<()> {
     let builder = WebviewBuilder::new(SETTINGS_PANEL, WebviewUrl::App("settings.html".into()))
         // Mismo perfil que WhatsApp: comparte sus procesos de WebView2 y no gasta más.
         .data_directory(crate::accounts::profile_dir(app, &get(app).active_account)?);
+    // Compartir perfil exige los mismos argumentos de WebView2 que la webview de WhatsApp.
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args(crate::BROWSER_ARGS);
     // Entra deslizándose desde la izquierda.
     let hidden = -(size.width as i32);
     let panel = window.add_child(builder, PhysicalPosition::new(hidden, 0), size)?;

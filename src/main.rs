@@ -11,6 +11,8 @@ mod toast;
 mod updates;
 
 use std::path::PathBuf;
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
@@ -266,6 +268,23 @@ window.addEventListener("click", (event) => {
 }, true);
 "##;
 
+/// Argumentos de WebView2 para todas las webviews (las que comparten carpeta de datos tienen que
+/// usar los mismos, o WebView2 se niega a crear la segunda).
+///
+/// Conversa pasa casi todo el tiempo minimizada o en la bandeja, y Chromium trata una página oculta
+/// como una pestaña en segundo plano: medido con la ventana minimizada, sus temporizadores iban 10
+/// veces más lentos y su proceso bajaba a prioridad Idle. WhatsApp seguía recibiendo los mensajes,
+/// pero tardaba en procesarlos y las notificaciones llegaban tarde. Con esto la página oculta sigue
+/// sin pintarse (no gasta en dibujar), pero su código corre a ritmo normal.
+///
+/// Lo demás es lo que wry pasa por defecto y se perdería al dar argumentos propios: sin menú
+/// flotante ni SmartScreen, y sonido sin gesto previo (el tono de llamada).
+#[cfg(windows)]
+pub(crate) const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,IntensiveWakeUpThrottling \
+    --autoplay-policy=no-user-gesture-required \
+    --disable-background-timer-throttling \
+    --disable-renderer-backgrounding";
+
 /// WhatsApp Web rechaza WebKitGTK como "navegador no soportado", así que en Linux nos
 /// presentamos como un Chrome de escritorio. En Windows WebView2 ya envía un UA de Edge válido.
 #[cfg(target_os = "linux")]
@@ -326,6 +345,8 @@ fn main() {
                     refresh_memory(app);
                     settings::resize_panel(window);
                 }
+                // Por si la ventana vuelve sin pasar por `show_window` ni cambiar de tamaño.
+                WindowEvent::Focused(true) => refresh_memory(app),
                 _ => {}
             }
         })
@@ -541,7 +562,9 @@ fn whatsapp_webview(app: &AppHandle, id: &str, url: Url) -> tauri::Result<Webvie
     let builder = builder.user_agent(LINUX_USER_AGENT);
     // En Linux WebKitGTK ya muestra las notificaciones de llamada del sistema.
     #[cfg(windows)]
-    let builder = builder.initialization_script(toast::CALL_SCRIPT);
+    let builder = builder
+        .initialization_script(toast::CALL_SCRIPT)
+        .additional_browser_args(BROWSER_ARGS);
 
     Ok(builder)
 }
@@ -684,6 +707,63 @@ fn set_background(app: &AppHandle, background: bool) {
     for webview in accounts::all(app) {
         set_memory_low(&webview, background || webview.label() != active);
     }
+    #[cfg(windows)]
+    hide_in_background(app, background);
+}
+
+/// La ventana está oculta o minimizada (lo último que aplicó `hide_in_background`).
+#[cfg(windows)]
+static IN_BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+/// Al pasar a segundo plano oculta la webview de la cuenta activa y le quita el foco; al volver la
+/// muestra y le devuelve el teclado.
+///
+/// WebView2 no se entera de que su ventana está en la bandeja: medido, la página seguía "visible"
+/// (y a veces con `document.hasFocus()` a true), y así WhatsApp da por visto el chat abierto y no
+/// avisa de sus mensajes. Oculta, además, no gasta en dibujarse; `BROWSER_ARGS` evita que se frene.
+#[cfg(windows)]
+fn hide_in_background(app: &AppHandle, background: bool) {
+    // Solo en el cambio: esto se llama también en cada paso de un redimensionado.
+    if IN_BACKGROUND.swap(background, Ordering::Relaxed) == background {
+        return;
+    }
+    let Some(webview) = accounts::active(app) else {
+        return;
+    };
+    if background {
+        let _ = webview.hide();
+        release_focus(app);
+    } else {
+        let _ = webview.show();
+        // El teclado, a lo que se ve: el panel de Ajustes si está abierto, o WhatsApp.
+        let focus = app.get_webview(settings::SETTINGS_PANEL).unwrap_or(webview);
+        let _ = focus.set_focus();
+    }
+}
+
+/// Para quien le haya dado el foco a una página que no se está viendo (ver `toast::mark_read`).
+#[cfg(windows)]
+pub(crate) fn release_focus_if_background(app: &AppHandle) {
+    if IN_BACKGROUND.load(Ordering::Relaxed) {
+        release_focus(app);
+    }
+}
+
+/// Quita el foco de teclado a WhatsApp Web dándoselo a la ventana que la contiene: ocultar la
+/// webview no garantiza que la página deje de creerse enfocada.
+#[cfg(windows)]
+fn release_focus(app: &AppHandle) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
+
+    let Some(Ok(hwnd)) = app.get_window(MAIN_WINDOW).map(|window| window.hwnd()) else {
+        return;
+    };
+    let hwnd = hwnd.0 as isize;
+    // El foco es de cada hilo: tiene que pedirlo el de la ventana.
+    let _ = app.run_on_main_thread(move || unsafe {
+        let _ = SetFocus(Some(HWND(hwnd as _)));
+    });
 }
 
 /// `set_background` según el estado actual de la ventana.
